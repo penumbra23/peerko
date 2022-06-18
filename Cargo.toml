@@ -2,7 +2,7 @@
 name = "peerko"
 version = "0.0.1"
 edition = "2021"
-author = "penumbra23"
+authors = ["penumbra23"]
 
 [dependencies]
 borsh = "0.9.3"
