@@ -5,4 +5,4 @@ edition = "2021"
 authors = ["penumbra23"]
 
 [dependencies]
-borsh = "0.9.3"
+binary-layout = "3.0.0"
