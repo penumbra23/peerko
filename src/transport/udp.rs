@@ -2,7 +2,7 @@ use std::net::{UdpSocket, SocketAddr};
 
 use super::common::{Transport, TransportError, TransportPacket};
 
-struct UdpTransport {
+pub struct UdpTransport {
     socket: UdpSocket,
 }
 

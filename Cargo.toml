@@ -5,4 +5,4 @@ edition = "2021"
 authors = ["penumbra23"]
 
 [dependencies]
-binary-layout = "3.0.0"
+endian_codec = "0.1.1"
