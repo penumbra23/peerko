@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, net::{SocketAddr, IpAddr}};
 
 use endian_codec::{PackedSize, EncodeBE, DecodeBE};
 
@@ -85,6 +85,54 @@ impl TryInto<String> for MemberRequest {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
+pub struct MemberResponse {
+    group: [u8; 32],
+    member_number: u32,
+    data: [u8; 30],
+}
+
+impl MemberResponse {
+    pub fn new(group: &str, addrs: Vec<SocketAddr>) -> Result<MemberResponse, FormatError> {
+        if addrs.len() > 5 {
+            return Err(FormatError{error: String::from("More than 5 peer addresses.")});
+        }
+
+        if group.len() > 32 {
+            return Err(FormatError{error: String::from("Group name exceeds 32.")});
+        }
+        
+        let mut buf: [u8; 32]= [0; 32];
+        buf[0..group.len()].copy_from_slice(group.as_bytes());
+
+        let mut addr_buf: [u8; 30]= [0; 30];
+
+        let member_count = addrs.len().try_into().expect("Failed to get member count");
+        
+        let mut i = 0;
+        addrs.iter().enumerate().for_each(|(i, addr)| 
+        {
+            let addr = addrs[i];
+            let ip_bytes = match addr.ip() {
+                IpAddr::V4(ip) => ip.octets(),
+                _ => panic!("Only IPv4 supported"),
+            };
+
+            // TODO: address insert
+
+            let port = addr.port();
+
+            let mut port_bytes: [u8; 2] = [0; 2];
+            port_bytes[0] = (port & 0xFF00) as u8;
+            port_bytes[1] = (port & 0x00FF) as u8;
+
+            // TODO: port insert
+        });
+
+        Ok(MemberResponse { group: buf, member_number: member_count, data: addr_buf })
+    }
+}
+
 mod tests {
     use crate::message::format::{Header, MAGIC_HEADER, MessageType, MemberRequest};
 
@@ -100,7 +148,18 @@ mod tests {
     }
 
     #[test]
-    fn msg_request_serialization() {
+    fn member_request_serialization() {
+        let req = MemberRequest::new("my-group").unwrap();
+        let buf: Vec<u8> = req.into();
+        assert_eq!(buf[0..8], *"my-group".as_bytes());
+
+        let req2 = MemberRequest::new("my-second-group").unwrap();
+        let str: String = req2.try_into().unwrap();
+        assert_eq!(str, "my-second-group");
+    }
+
+    #[test]
+    fn member_response_serialization() {
         let req = MemberRequest::new("my-group").unwrap();
         let buf: Vec<u8> = req.into();
         assert_eq!(buf[0..8], *"my-group".as_bytes());
