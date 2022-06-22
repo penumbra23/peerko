@@ -1,4 +1,4 @@
-use std::{fmt::Display, net::{SocketAddr, IpAddr}, io::{Cursor, Write, Error}};
+use std::{fmt::Display, net::{SocketAddr, IpAddr}, io::{Cursor, Write}};
 
 use endian_codec::{PackedSize, EncodeBE, DecodeBE};
 
@@ -90,6 +90,13 @@ impl TryInto<String> for MemberRequest {
     }
 }
 
+impl From<Vec<u8>> for MemberRequest {
+    fn from(mut vec: Vec<u8>) -> Self {
+        vec.resize(32, 0);
+        MemberRequest::decode_from_be_bytes(&vec)
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
 pub struct MemberResponse {
     group: [u8; 32],
@@ -114,8 +121,7 @@ impl MemberResponse {
 
         let member_count = addrs.len().try_into().expect("Failed to get member count");
         
-        addrs.iter().enumerate().for_each(|(i, addr)| 
-        {
+        for addr in addrs {
             let ip_bytes = match addr.ip() {
                 IpAddr::V4(ip) => ip.octets(),
                 _ => panic!("Only IPv4 supported"),
@@ -130,7 +136,7 @@ impl MemberResponse {
             port_bytes[1] = (port & 0x00FF) as u8;
 
             addr_buf.write(&port_bytes).unwrap();
-        });
+        };
 
         Ok(MemberResponse { group: buf, member_number: member_count, data: vec_to_sized_array(addr_buf.get_ref().to_vec()).unwrap() })
     }
@@ -144,10 +150,15 @@ impl Into<Vec<u8>> for MemberResponse {
     }
 }
 
-mod tests {
-    use crate::message::format::{Header, MAGIC_HEADER, MessageType, MemberRequest};
+impl From<Vec<u8>> for MemberResponse {
+    fn from(mut vec: Vec<u8>) -> Self {
+        vec.resize(6632, 0);
+        MemberResponse::decode_from_be_bytes(&vec)
+    }
+}
 
-    use super::MemberResponse;
+mod tests {
+    use super::{Header, MAGIC_HEADER, MessageType, MemberRequest, MemberResponse};
 
     #[test]
     fn header_serialization() {
@@ -172,6 +183,12 @@ mod tests {
     }
 
     #[test]
+    fn member_request_deserialization() {
+        let req = MemberRequest::from("my-group".as_bytes().to_vec());
+        assert_eq!(req.group[0..8], *"my-group".as_bytes());
+    }
+
+    #[test]
     fn member_response_serialization() {
         let addrs = vec![
             "11.22.33.44:1234".parse().unwrap(),
@@ -179,7 +196,9 @@ mod tests {
         ];
         let res = MemberResponse::new("my-group", addrs).unwrap();
         let buf: Vec<u8> = res.into();
+
         assert_eq!(buf[0..8], *"my-group".as_bytes());
+
         // Member count
         assert_eq!(buf[32..36], vec![0, 0, 0, 2]);
 
@@ -194,5 +213,37 @@ mod tests {
 
         // Second port
         assert_eq!(buf[46..48], vec![0xFF, 0xE7]);
+    }
+
+    #[test]
+    fn member_response_deserialization() {
+        let data = [
+            // group name
+            'g' as u8, 'r' as u8, 'p' as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            // member count
+            0, 0, 0, 2,
+            // First IP and port
+            11, 22, 255, 0, 11, 67,
+            // Second IP and port
+            255, 0, 1, 1, 0xFD, 0xFE,
+        ];
+        let res = MemberResponse::from(data.to_vec());
+
+        assert_eq!(res.group[0..3], *"grp".as_bytes());
+
+        // Member count
+        assert_eq!(res.member_number, 2);
+
+        // First IP
+        assert_eq!(res.data[0..4], vec![11, 22, 255, 0]);
+
+        // First port
+        assert_eq!(res.data[4..6], vec![11, 67]);
+
+        // Second IP
+        assert_eq!(res.data[6..10], vec![255, 0, 1, 1]);
+
+        // Second port
+        assert_eq!(res.data[10..12], vec![0xFD, 0xFE]);
     }
 }
