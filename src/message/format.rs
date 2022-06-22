@@ -1,4 +1,4 @@
-use std::{fmt::Display, net::{SocketAddr, IpAddr}};
+use std::{fmt::Display, net::{SocketAddr, IpAddr}, io::{Cursor, Write, Error}};
 
 use endian_codec::{PackedSize, EncodeBE, DecodeBE};
 
@@ -13,6 +13,11 @@ impl Display for FormatError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Format err: {}", self.error)
     }
+}
+
+fn vec_to_sized_array<T, const N: usize>(vec: Vec<T>) -> Result<[T; N], FormatError> {
+    vec.try_into()
+        .map_err(|_| FormatError { error: String::from("Vec to sized array failed") })
 }
 
 #[derive(Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
@@ -105,36 +110,44 @@ impl MemberResponse {
         let mut buf: [u8; 32]= [0; 32];
         buf[0..group.len()].copy_from_slice(group.as_bytes());
 
-        let mut addr_buf: [u8; 30]= [0; 30];
+        let mut addr_buf = Cursor::new(vec![0; 30]);
 
         let member_count = addrs.len().try_into().expect("Failed to get member count");
         
-        let mut i = 0;
         addrs.iter().enumerate().for_each(|(i, addr)| 
         {
-            let addr = addrs[i];
             let ip_bytes = match addr.ip() {
                 IpAddr::V4(ip) => ip.octets(),
                 _ => panic!("Only IPv4 supported"),
             };
 
-            // TODO: address insert
+            addr_buf.write(&ip_bytes).unwrap();
 
             let port = addr.port();
 
             let mut port_bytes: [u8; 2] = [0; 2];
-            port_bytes[0] = (port & 0xFF00) as u8;
+            port_bytes[0] = ((port & 0xFF00) >> 8) as u8;
             port_bytes[1] = (port & 0x00FF) as u8;
 
-            // TODO: port insert
+            addr_buf.write(&port_bytes).unwrap();
         });
 
-        Ok(MemberResponse { group: buf, member_number: member_count, data: addr_buf })
+        Ok(MemberResponse { group: buf, member_number: member_count, data: vec_to_sized_array(addr_buf.get_ref().to_vec()).unwrap() })
+    }
+}
+
+impl Into<Vec<u8>> for MemberResponse {
+    fn into(self) -> Vec<u8> {
+        let mut buf = [0; 66];
+        self.encode_as_be_bytes(&mut buf);
+        buf.to_vec()
     }
 }
 
 mod tests {
     use crate::message::format::{Header, MAGIC_HEADER, MessageType, MemberRequest};
+
+    use super::MemberResponse;
 
     #[test]
     fn header_serialization() {
@@ -160,12 +173,26 @@ mod tests {
 
     #[test]
     fn member_response_serialization() {
-        let req = MemberRequest::new("my-group").unwrap();
-        let buf: Vec<u8> = req.into();
+        let addrs = vec![
+            "11.22.33.44:1234".parse().unwrap(),
+            "255.0.0.1:65511".parse().unwrap(),
+        ];
+        let res = MemberResponse::new("my-group", addrs).unwrap();
+        let buf: Vec<u8> = res.into();
         assert_eq!(buf[0..8], *"my-group".as_bytes());
+        // Member count
+        assert_eq!(buf[32..36], vec![0, 0, 0, 2]);
 
-        let req2 = MemberRequest::new("my-second-group").unwrap();
-        let str: String = req2.try_into().unwrap();
-        assert_eq!(str, "my-second-group");
+        // First IP
+        assert_eq!(buf[36..40], vec![11, 22, 33, 44]);
+
+        // First port
+        assert_eq!(buf[40..42], vec![0x04, 0xD2]);
+
+        // Second IP
+        assert_eq!(buf[42..46], vec![255, 0, 0, 1]);
+
+        // Second port
+        assert_eq!(buf[46..48], vec![0xFF, 0xE7]);
     }
 }
