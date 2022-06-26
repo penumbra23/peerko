@@ -20,7 +20,9 @@ fn vec_to_sized_array<T, const N: usize>(vec: Vec<T>) -> Result<[T; N], FormatEr
         .map_err(|_| FormatError { error: String::from("Vec to sized array failed") })
 }
 
-#[derive(Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
+pub trait MessageContent {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
 pub struct Header {
     magic_bytes: u8,
     v_type: u8,
@@ -35,6 +37,14 @@ impl Header {
             size
         }
     }
+
+    pub fn msg_type(&self) -> MessageType {
+        MessageType::from(self.v_type & 0x0F)
+    }
+
+    pub fn msg_size(&self) -> u16 {
+        self.size
+    }
 }
 
 impl Into<Vec<u8>> for Header {
@@ -42,6 +52,13 @@ impl Into<Vec<u8>> for Header {
         let mut buf = [0; 4];
         self.encode_as_be_bytes(&mut buf);
         buf.to_vec()
+    }
+}
+
+impl From<Vec<u8>> for Header {
+    fn from(mut vec: Vec<u8>) -> Self {
+        vec.resize(4, 0);
+        Header::decode_from_be_bytes(&vec)
     }
 }
 
@@ -53,10 +70,24 @@ pub enum MessageType {
     Chat = 0x08,
 }
 
-#[derive(Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
+impl From<u8> for MessageType {
+    fn from(val: u8) -> Self {
+        match val {
+            0x01 => MessageType::Alive,
+            0x02 => MessageType::MemberReq,
+            0x04 => MessageType::MemberRes,
+            0x08 => MessageType::Chat,
+            _ => panic!("Wrong message type supplied")
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
 pub struct MemberRequest {
     group: [u8; 32],
 }
+
+impl MessageContent for MemberRequest {}
 
 impl MemberRequest {
     pub fn new(group: &str) -> Result<MemberRequest, FormatError> {
@@ -67,6 +98,12 @@ impl MemberRequest {
         let mut buf: [u8; 32]= [0; 32];
         buf[0..group.len()].copy_from_slice(group.as_bytes());
         Ok(MemberRequest { group: buf })
+    }
+
+    pub fn group_name(&self) -> Result<String, FormatError> {
+        String::from_utf8(self.group.into_iter().filter(|&p| p != 0).collect())
+            .map(|res| res.trim().to_string())
+            .map_err(|err| FormatError { error: err.to_string() })
     }
 }
 
@@ -84,9 +121,7 @@ impl TryInto<String> for MemberRequest {
     fn try_into(self) -> Result<String, Self::Error> {
         // Filter out zero bytes
         // TODO: encapsulate length of string
-        String::from_utf8(self.group.into_iter().filter(|&p| p != 0).collect())
-            .map(|res| res.trim().to_string())
-            .map_err(|err| FormatError { error: err.to_string() })
+        self.group_name()
     }
 }
 
@@ -97,12 +132,14 @@ impl From<Vec<u8>> for MemberRequest {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
 pub struct MemberResponse {
     group: [u8; 32],
     member_number: u32,
     data: [u8; 30],
 }
+
+impl MessageContent for MemberResponse {}
 
 impl MemberResponse {
     pub fn new(group: &str, addrs: Vec<SocketAddr>) -> Result<MemberResponse, FormatError> {
@@ -163,6 +200,44 @@ pub struct Chat {
     member_number: u32,
     // TODO: see how this will get serialized
     // data: [u8; 512],
+}
+
+impl MessageContent for Chat {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
+pub struct Message<T> 
+    where T: MessageContent + EncodeBE + DecodeBE {
+    header: Header,
+    content: T,
+}
+
+impl<T> Message<T> where T: MessageContent + EncodeBE + DecodeBE {
+    pub fn new(header: Header, content: T) -> Message<T> {
+        Message { header, content }
+    }
+
+    pub fn header(&self) -> &Header {
+        &self.header
+    }
+
+    pub fn content(&self) -> &T {
+        &self.content
+    }
+}
+
+impl<T> Into<Vec<u8>> for Message<T> where T: MessageContent + EncodeBE + DecodeBE {
+    fn into(self) -> Vec<u8> {
+        let mut buf = [0; 576];
+        self.encode_as_be_bytes(&mut buf);
+        buf.to_vec()
+    }
+}
+
+impl<T> From<Vec<u8>> for Message<T> where T: MessageContent + EncodeBE + DecodeBE {
+    fn from(mut vec: Vec<u8>) -> Self {
+        vec.resize(576, 0);
+        Message::decode_from_be_bytes(&vec)
+    }
 }
 
 mod tests {
