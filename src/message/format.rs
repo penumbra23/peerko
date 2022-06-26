@@ -157,6 +157,14 @@ impl From<Vec<u8>> for MemberResponse {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
+pub struct Chat {
+    group: [u8; 32],
+    member_number: u32,
+    // TODO: see how this will get serialized
+    // data: [u8; 512],
+}
+
 mod tests {
     use super::{Header, MAGIC_HEADER, MessageType, MemberRequest, MemberResponse};
 
