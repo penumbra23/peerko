@@ -21,7 +21,7 @@ impl Display for FormatError {
 }
 
 /// Market trait for types that wrap the content of a message
-pub trait MessageContent: EncodeBE + DecodeBE {}
+pub trait MessageContent: EncodeBE + DecodeBE + Clone {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
 pub struct Header {
@@ -63,6 +63,7 @@ impl From<Vec<u8>> for Header {
     }
 }
 
+#[derive(Clone, Copy)]
 #[repr(u8)]
 pub enum MessageType {
     Alive = 0x01,
@@ -195,7 +196,7 @@ impl From<Vec<u8>> for MemberResponse {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
 pub struct Chat {
     group: [u8; 32],
     member_number: u32,
