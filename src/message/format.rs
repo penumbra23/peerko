@@ -4,6 +4,11 @@ use endian_codec::{PackedSize, EncodeBE, DecodeBE};
 
 const MAGIC_HEADER: u8 = 0x9D;
 
+fn vec_to_sized_array<T, const N: usize>(vec: Vec<T>) -> Result<[T; N], FormatError> {
+    vec.try_into()
+        .map_err(|_| FormatError { error: String::from("Vec to sized array failed") })
+}
+
 #[derive(Clone, Debug)]
 pub struct FormatError {
     pub error: String,
@@ -15,12 +20,8 @@ impl Display for FormatError {
     }
 }
 
-fn vec_to_sized_array<T, const N: usize>(vec: Vec<T>) -> Result<[T; N], FormatError> {
-    vec.try_into()
-        .map_err(|_| FormatError { error: String::from("Vec to sized array failed") })
-}
-
-pub trait MessageContent {}
+/// Market trait for types that wrap the content of a message
+pub trait MessageContent: EncodeBE + DecodeBE {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
 pub struct Header {
@@ -206,12 +207,12 @@ impl MessageContent for Chat {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
 pub struct Message<T> 
-    where T: MessageContent + EncodeBE + DecodeBE {
+    where T: MessageContent {
     header: Header,
     content: T,
 }
 
-impl<T> Message<T> where T: MessageContent + EncodeBE + DecodeBE {
+impl<T> Message<T> where T: MessageContent {
     pub fn new(header: Header, content: T) -> Message<T> {
         Message { header, content }
     }
@@ -225,7 +226,7 @@ impl<T> Message<T> where T: MessageContent + EncodeBE + DecodeBE {
     }
 }
 
-impl<T> Into<Vec<u8>> for Message<T> where T: MessageContent + EncodeBE + DecodeBE {
+impl<T> Into<Vec<u8>> for Message<T> where T: MessageContent {
     fn into(self) -> Vec<u8> {
         let mut buf = [0; 576];
         self.encode_as_be_bytes(&mut buf);
@@ -233,7 +234,7 @@ impl<T> Into<Vec<u8>> for Message<T> where T: MessageContent + EncodeBE + Decode
     }
 }
 
-impl<T> From<Vec<u8>> for Message<T> where T: MessageContent + EncodeBE + DecodeBE {
+impl<T> From<Vec<u8>> for Message<T> where T: MessageContent {
     fn from(mut vec: Vec<u8>) -> Self {
         vec.resize(576, 0);
         Message::decode_from_be_bytes(&vec)
