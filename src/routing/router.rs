@@ -26,7 +26,7 @@ impl<T: Clone> Bus<T> {
 }
 
 pub trait Handler<T: MessageContent> {
-    fn process(msg_type: MessageType, func: dyn Fn(T) -> ());
+    fn process(&self, msg_type: MessageType, msg: &T) -> T;
 }
 
 pub struct Router<T: MessageContent, H: Handler<T>> {
@@ -52,6 +52,14 @@ impl<T: MessageContent, H: Handler<T>> Router<T, H> {
     pub fn register_handler(&mut self, handler: H) {
         self.handlers.lock().unwrap().push(handler);
     }
+
+    pub fn execute_handlers(&self, msg_type: MessageType, msg: Message<T>) {
+        let handlers = self.handlers.lock().unwrap();
+        for handler in handlers.iter() {
+            let result = handler.process(msg_type, msg.content());
+            self.tx.send(result).unwrap();
+        }
+    } 
 }
 
 mod tests {
