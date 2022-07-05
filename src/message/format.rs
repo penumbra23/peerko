@@ -63,7 +63,7 @@ impl From<Vec<u8>> for Header {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum MessageType {
     Alive = 0x01,
@@ -205,6 +205,17 @@ pub struct Chat {
 }
 
 impl MessageContent for Chat {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
+pub struct Empty {}
+
+impl MessageContent for Empty {}
+
+impl Empty {
+    pub fn new() -> Empty {
+        Empty {  }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
 pub struct Message<T> 
