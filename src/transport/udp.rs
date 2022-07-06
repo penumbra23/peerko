@@ -13,6 +13,15 @@ impl UdpTransport {
             socket: soc,
         })
     }
+
+    pub fn try_clone(&self) -> Result<UdpTransport, TransportError> {
+        let soc = self.socket.try_clone().map_err(|err| TransportError{ error: err.to_string() })?;
+        Ok(
+            UdpTransport{
+                socket: soc,
+            }
+        )
+    }
 }
 
 impl Transport for UdpTransport {

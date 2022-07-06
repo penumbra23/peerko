@@ -1,4 +1,4 @@
-use std::{fmt::Display, net::{SocketAddr, IpAddr}, io::{Cursor, Write}};
+use std::{fmt::Display, net::{SocketAddr, IpAddr, SocketAddrV4}, io::{Cursor, Write, Read}};
 
 use endian_codec::{PackedSize, EncodeBE, DecodeBE};
 
@@ -179,6 +179,34 @@ impl MemberResponse {
 
         Ok(MemberResponse { group: buf, member_number: member_count, data: vec_to_sized_array(addr_buf.get_ref().to_vec()).unwrap() })
     }
+
+    pub fn group_name(&self) -> Result<String, FormatError> {
+        String::from_utf8(self.group.into_iter().filter(|&p| p != 0).collect())
+            .map(|res| res.trim().to_string())
+            .map_err(|err| FormatError { error: err.to_string() })
+    }
+
+    pub fn peers(&self) -> Vec<SocketAddr> {
+        let mut peer_list =  Vec::<SocketAddr>::new();
+        let mut addr_buf = Cursor::new(self.data);
+
+        let member_count = self.member_number;
+        
+        for i in 0..member_count {
+            let mut ip_buf = [0; 4];
+            addr_buf.read_exact(&mut ip_buf).unwrap();
+            let ip_addr = IpAddr::from(ip_buf);
+
+            let mut port_buf: [u8; 2] = [0; 2];
+            addr_buf.read_exact(&mut port_buf).unwrap();
+            let port = ((port_buf[0] as u16) << 8)  + port_buf[1] as u16;
+
+            peer_list.push(SocketAddr::new(ip_addr, port));
+        };
+
+        peer_list
+    }
+
 }
 
 impl Into<Vec<u8>> for MemberResponse {
@@ -254,6 +282,8 @@ impl<T> From<Vec<u8>> for Message<T> where T: MessageContent {
 }
 
 mod tests {
+    use std::net::SocketAddr;
+
     use super::{Header, MAGIC_HEADER, MessageType, MemberRequest, MemberResponse};
 
     #[test]
@@ -319,7 +349,7 @@ mod tests {
             // member count
             0, 0, 0, 2,
             // First IP and port
-            11, 22, 255, 0, 11, 67,
+            11, 22, 255, 0, 0x04, 0xD2,
             // Second IP and port
             255, 0, 1, 1, 0xFD, 0xFE,
         ];
@@ -334,12 +364,16 @@ mod tests {
         assert_eq!(res.data[0..4], vec![11, 22, 255, 0]);
 
         // First port
-        assert_eq!(res.data[4..6], vec![11, 67]);
+        assert_eq!(res.data[4..6], vec![0x04, 0xD2]);
 
         // Second IP
         assert_eq!(res.data[6..10], vec![255, 0, 1, 1]);
 
         // Second port
         assert_eq!(res.data[10..12], vec![0xFD, 0xFE]);
+
+        let mut peers = res.peers();
+        assert_eq!(peers.pop().unwrap(), SocketAddr::new("255.0.1.1".parse().unwrap(), 65022));
+        assert_eq!(peers.pop().unwrap(), SocketAddr::new("11.22.255.0".parse().unwrap(), 1234));
     }
 }
