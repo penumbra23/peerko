@@ -1,15 +1,13 @@
-use std::{net::{SocketAddr, UdpSocket}, collections::HashMap, sync::{Mutex, Arc}};
+use std::{net::{SocketAddr}, collections::HashMap, sync::{Mutex, Arc}};
 
 use clap::Parser;
-use message::format::Empty;
-use routing::router::Handler;
+use message::format::{Empty, Chat};
 use transport::{udp::UdpTransport, common::{Transport, TransportPacket}};
 
-use crate::{message::format::{MemberResponse, Header, Message, MemberRequest, MessageType}, routing::router::Router};
+use crate::{message::format::{MemberResponse, Header, Message, MemberRequest, MessageType}};
 
 mod transport;
 mod message;
-mod routing;
 
 #[derive(Parser, Debug)]
 struct CliArgs {
@@ -26,6 +24,16 @@ struct CliArgs {
     bootstrap: Option<SocketAddr>,
 }
 
+fn send_member_request(sock: &UdpTransport, peer: SocketAddr, group: &str) {
+    let header = Header::new(1, message::format::MessageType::MemberReq, 10);
+    let msg = Message::<MemberRequest>::new(header, MemberRequest::new(group).unwrap());
+    let buf: Vec<u8> = msg.into();
+    sock.send(TransportPacket {
+        socket_addr: peer,
+        data: buf,
+    }).unwrap();
+}
+
 fn main() {
     let args = CliArgs::parse();
     
@@ -33,14 +41,16 @@ fn main() {
 
     let peer_map_lock = Arc::new(Mutex::new(HashMap::<String, Vec<SocketAddr>>::new()));
     let alive_peer_map_lock = peer_map_lock.clone();
+    let chat_peer_map_lock = peer_map_lock.clone();
 
     let tx_sock = socket.try_clone().unwrap();
     let alive_sock = socket.try_clone().unwrap();
 
+    // Keep alive thread
     std::thread::spawn(move || {
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            let mut peer_map = alive_peer_map_lock.lock().unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let peer_map = alive_peer_map_lock.lock().unwrap();
     
             for (group, peer_list) in peer_map.iter() {
                 for peer in peer_list.iter() {
@@ -51,7 +61,8 @@ fn main() {
         }
     });
 
-    let t = std::thread::spawn(move || {
+    // Handles response messages
+    std::thread::spawn(move || {
         loop {
             let packet = match socket.recv() {
                 Ok(p) => p,
@@ -61,14 +72,11 @@ fn main() {
                 },
             };
 
-            println!("msg from: {}", packet.socket_addr);
-            std::thread::sleep(std::time::Duration::from_secs(3));
-
             let header_bytes = &packet.data[0..4];
             let header = Header::from(header_bytes.to_vec());
 
             match header.msg_type() {
-                MessageType::Alive => println!("Alive"),
+                MessageType::Alive => (),
                 MessageType::MemberReq => {
                     let msg = Message::<MemberRequest>::from(packet.data);
                     let group_name = msg.content().group_name().unwrap();
@@ -106,25 +114,53 @@ fn main() {
                     let peer_list = peer_map.get_mut(&group_name).unwrap();
 
                     for peer in peers {
-                        peer_list.push(peer);
+                        if !peer_list.contains(&peer) {
+                            peer_list.push(peer);
+                        }
                     }
                 },
-                MessageType::Chat => println!("Chat"),
+                MessageType::Chat => {
+                    let msg = Message::<Chat>::from(packet.data);
+                    println!("{}", msg.content().msg().unwrap());
+                },
             }
         }
     });
 
-    std::thread::sleep(std::time::Duration::from_secs(2));
-
     if let Some(bootstrap) = args.bootstrap {
-        let header = Header::new(1, message::format::MessageType::MemberReq, 10);
-        let msg = Message::<MemberRequest>::new(header, MemberRequest::new(&args.group.unwrap()).unwrap());
-        let buf: Vec<u8> = msg.into();
-        tx_sock.send(TransportPacket {
-            socket_addr: bootstrap,
-            data: buf,
-        }).unwrap();
+        send_member_request(&tx_sock, bootstrap, args.group.as_ref().unwrap());
     }
 
-    t.join().unwrap();
+    // Input thread for reading the input and sending to other peers
+    loop {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap();
+        
+        let peer_map = chat_peer_map_lock.lock().unwrap();
+        
+        match line.trim() {
+            "peers" => {
+                println!("{:?}", peer_map);
+                continue;
+            },
+            "req" => {
+                if let Some(bootstrap) = args.bootstrap {
+                    send_member_request(&tx_sock, bootstrap, args.group.as_ref().unwrap());
+                };
+                continue;
+            },
+            _ => (),
+        }
+
+        let header = Header::new(1, message::format::MessageType::Chat, line.len().try_into().unwrap());
+        for (group, peer_list) in peer_map.iter() {
+            for peer in peer_list.iter() {
+                let msg = Message::<Chat>::new(header, Chat::new(&args.group.as_ref().unwrap(), line.as_str()).unwrap());
+                tx_sock.send(TransportPacket {
+                    socket_addr: *peer,
+                    data: msg.into(),
+                }).unwrap();
+            }
+        }
+    }
 }
