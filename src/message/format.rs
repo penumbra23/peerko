@@ -1,6 +1,6 @@
-use std::{fmt::Display, net::{SocketAddr, IpAddr, SocketAddrV4}, io::{Cursor, Write, Read}};
+use std::{fmt::Display, net::{SocketAddr, IpAddr}, io::{Cursor, Read}};
 
-use endian_codec::{PackedSize, EncodeBE, DecodeBE};
+use byteorder::{WriteBytesExt, BigEndian, ReadBytesExt};
 
 const MAGIC_HEADER: u8 = 0x9D;
 
@@ -21,12 +21,13 @@ impl Display for FormatError {
 }
 
 /// Market trait for types that wrap the content of a message
-pub trait MessageContent: EncodeBE + DecodeBE + Clone {}
+pub trait MessageContent: Clone + Into<Vec<u8>> + TryFrom<Vec<u8>> {}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
     magic_bytes: u8,
-    v_type: u8,
+    version: u8,
+    msg_type: MessageType,
     size: u16,
 }
 
@@ -34,13 +35,14 @@ impl Header {
     pub fn new(version: u8, r#type: MessageType, size: u16) -> Header {
         Header {
             magic_bytes: MAGIC_HEADER,
-            v_type: (version & 0x0F) << 4 | (r#type as u8) & 0x0F,
-            size
+            version,
+            msg_type: r#type,
+            size,
         }
     }
 
     pub fn msg_type(&self) -> MessageType {
-        MessageType::from(self.v_type & 0x0F)
+        self.msg_type
     }
 
     pub fn msg_size(&self) -> u16 {
@@ -50,16 +52,28 @@ impl Header {
 
 impl Into<Vec<u8>> for Header {
     fn into(self) -> Vec<u8> {
-        let mut buf = [0; 4];
-        self.encode_as_be_bytes(&mut buf);
-        buf.to_vec()
+        let mut buf = vec![];
+        buf.write_u8(self.magic_bytes).unwrap();
+        buf.write_u8((self.version << 4) | self.msg_type as u8).unwrap();
+        buf.write_u16::<BigEndian>(self.size).unwrap();
+        buf
     }
 }
 
-impl From<Vec<u8>> for Header {
-    fn from(mut vec: Vec<u8>) -> Self {
-        vec.resize(4, 0);
-        Header::decode_from_be_bytes(&vec)
+impl TryFrom<Vec<u8>> for Header {
+    type Error = FormatError;
+
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        let mut reader = Cursor::new(value);
+        let magic_bytes = reader.read_u8().unwrap();
+        let version_type = reader.read_u8().unwrap();
+        let size = reader.read_u16::<BigEndian>().unwrap();
+        Ok(Header {
+            magic_bytes,
+            version: version_type & 0xF0,
+            msg_type: MessageType::from(version_type & 0x0F),
+            size,
+        })
     }
 }
 
@@ -84,68 +98,79 @@ impl From<u8> for MessageType {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemberRequest {
-    group: [u8; 32],
+    peer_id: String,
+    group: String,
 }
 
 impl MessageContent for MemberRequest {}
 
 impl MemberRequest {
-    pub fn new(group: &str) -> Result<MemberRequest, FormatError> {
+    pub fn new(peer_id: &str, group: &str) -> Result<MemberRequest, FormatError> {
         if group.len() > 32 {
             return Err(FormatError{error: String::from("Group name exceeds 32.")});
         }
+
+        if peer_id.len() > 32 {
+            return Err(FormatError{error: String::from("Peer id exceeds 32.")});
+        }
         
-        let mut buf: [u8; 32]= [0; 32];
-        buf[0..group.len()].copy_from_slice(group.as_bytes());
-        Ok(MemberRequest { group: buf })
+        Ok(MemberRequest { group: group.to_string(),  peer_id: peer_id.to_string() })
     }
 
-    pub fn group_name(&self) -> Result<String, FormatError> {
-        String::from_utf8(self.group.into_iter().filter(|&p| p != 0).collect())
-            .map(|res| res.trim().to_string())
-            .map_err(|err| FormatError { error: err.to_string() })
+    pub fn group_name(&self) -> String {
+        self.group.clone()
+    }
+
+    pub fn peer_id(&self) -> String {
+        self.peer_id.clone()
     }
 }
 
 impl Into<Vec<u8>> for MemberRequest {
     fn into(self) -> Vec<u8> {
-        let mut buf = [0; 32];
-        self.encode_as_be_bytes(&mut buf);
-        buf.to_vec()
+        let mut buf = vec![0u8; 64];
+        buf[0..self.group.len()].copy_from_slice(&self.group.as_bytes());
+        buf[32..32+self.peer_id.len()].copy_from_slice(&self.peer_id.as_bytes());
+        buf
     }
 }
 
-impl TryInto<String> for MemberRequest {
+impl TryFrom<Vec<u8>> for MemberRequest {
     type Error = FormatError;
 
-    fn try_into(self) -> Result<String, Self::Error> {
-        // Filter out zero bytes
-        // TODO: encapsulate length of string
-        self.group_name()
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        let mut reader = Cursor::new(value);
+
+        let mut grp_buf = vec![0; 32];
+        let mut peer_id_buf = vec![0; 32];
+        reader.read_exact(&mut grp_buf).unwrap();
+        reader.read_exact(&mut peer_id_buf).unwrap();
+
+        // TODO: handle this
+        let group = String::from_utf8(grp_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
+        let peer_id = String::from_utf8(peer_id_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
+
+        Ok(MemberRequest {
+            group,
+            peer_id,
+        })
     }
 }
 
-impl From<Vec<u8>> for MemberRequest {
-    fn from(mut vec: Vec<u8>) -> Self {
-        vec.resize(32, 0);
-        MemberRequest::decode_from_be_bytes(&vec)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemberResponse {
-    group: [u8; 32],
-    member_number: u32,
-    data: [u8; 30],
+    group: String,
+    member_number: u8,
+    peers: Vec<(String, SocketAddr)>,
 }
 
 impl MessageContent for MemberResponse {}
 
 impl MemberResponse {
-    pub fn new(group: &str, addrs: Vec<SocketAddr>) -> Result<MemberResponse, FormatError> {
-        if addrs.len() > 5 {
+    pub fn new(group: &str, peers: Vec<(String, SocketAddr)>) -> Result<MemberResponse, FormatError> {
+        if peers.len() > 5 {
             return Err(FormatError{error: String::from("More than 5 peer addresses.")});
         }
 
@@ -153,78 +178,87 @@ impl MemberResponse {
             return Err(FormatError{error: String::from("Group name exceeds 32.")});
         }
         
-        let mut buf: [u8; 32]= [0; 32];
-        buf[0..group.len()].copy_from_slice(group.as_bytes());
+        let member_number = peers.len().try_into().expect("Failed to get member count");
 
-        let mut addr_buf = Cursor::new(vec![0; 30]);
-
-        let member_count = addrs.len().try_into().expect("Failed to get member count");
-        
-        for addr in addrs {
-            let ip_bytes = match addr.ip() {
-                IpAddr::V4(ip) => ip.octets(),
-                _ => panic!("Only IPv4 supported"),
-            };
-
-            addr_buf.write(&ip_bytes).unwrap();
-
-            let port = addr.port();
-
-            let mut port_bytes: [u8; 2] = [0; 2];
-            port_bytes[0] = ((port & 0xFF00) >> 8) as u8;
-            port_bytes[1] = (port & 0x00FF) as u8;
-
-            addr_buf.write(&port_bytes).unwrap();
-        };
-
-        Ok(MemberResponse { group: buf, member_number: member_count, data: vec_to_sized_array(addr_buf.get_ref().to_vec()).unwrap() })
+        Ok(MemberResponse { group: group.to_string(), member_number, peers })
     }
 
-    pub fn group_name(&self) -> Result<String, FormatError> {
-        String::from_utf8(self.group.into_iter().filter(|&p| p != 0).collect())
-            .map(|res| res.trim().to_string())
-            .map_err(|err| FormatError { error: err.to_string() })
+    pub fn group_name(&self) -> String {
+        self.group.clone()
     }
 
-    pub fn peers(&self) -> Vec<SocketAddr> {
-        let mut peer_list =  Vec::<SocketAddr>::new();
-        let mut addr_buf = Cursor::new(self.data);
-
-        let member_count = self.member_number;
-        
-        for i in 0..member_count {
-            let mut ip_buf = [0; 4];
-            addr_buf.read_exact(&mut ip_buf).unwrap();
-            let ip_addr = IpAddr::from(ip_buf);
-
-            let mut port_buf: [u8; 2] = [0; 2];
-            addr_buf.read_exact(&mut port_buf).unwrap();
-            let port = ((port_buf[0] as u16) << 8)  + port_buf[1] as u16;
-
-            peer_list.push(SocketAddr::new(ip_addr, port));
-        };
-
-        peer_list
+    pub fn peers(&self) -> &Vec<(String, SocketAddr)> {
+        &self.peers
     }
 
 }
 
 impl Into<Vec<u8>> for MemberResponse {
     fn into(self) -> Vec<u8> {
-        let mut buf = [0; 66];
-        self.encode_as_be_bytes(&mut buf);
-        buf.to_vec()
+        // group_name + member_count + peer_id + IP(4) + Port(2)
+        let msg_size = 32 + 1 + (32 + 4 + 2) * self.peers.len();
+        let mut buf = vec![0; msg_size];
+
+        let grp_name_len = self.group.len();
+        buf[0..grp_name_len].copy_from_slice(self.group.as_bytes());
+
+        buf[32] = self.peers.len() as u8;
+
+        for i in 0..self.peers.len() {
+            let (peer_id, peer_addr) = &self.peers[i];
+            let offset = 33 + 38*i;
+            buf[offset..offset+peer_id.len()].copy_from_slice(peer_id.as_bytes());
+
+            let ip_bytes = match peer_addr.ip() {
+                IpAddr::V4(ip) => ip.octets(),
+                _ => panic!("Only IPv4 supported"),
+            };
+
+            buf[offset+32..offset+36].copy_from_slice(&ip_bytes);
+            buf[offset+36..offset+38].copy_from_slice(&peer_addr.port().to_be_bytes());
+        }
+
+        buf
     }
 }
 
-impl From<Vec<u8>> for MemberResponse {
-    fn from(mut vec: Vec<u8>) -> Self {
-        vec.resize(66, 0);
-        MemberResponse::decode_from_be_bytes(&vec)
+impl TryFrom<Vec<u8>> for MemberResponse {
+    type Error = FormatError;
+
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        let mut reader = Cursor::new(value);
+        let mut grp_buf = vec![0; 32];
+        
+        reader.read_exact(&mut grp_buf).unwrap();
+
+        let group = String::from_utf8(grp_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
+
+        let member_number = reader.read_u8().unwrap();
+
+        let mut peers: Vec<(String, SocketAddr)> = Vec::new();
+
+        for i in 0..member_number {
+            let mut peer_id_buf = vec![0; 32];
+            reader.read_exact(&mut peer_id_buf).unwrap();
+            let peer_id = String::from_utf8(peer_id_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
+
+            let mut ip_buf = [0; 4];
+            reader.read_exact(&mut ip_buf).unwrap();
+
+            let port = reader.read_u16::<BigEndian>().unwrap();
+
+            peers.push((peer_id, SocketAddr::new(IpAddr::from(ip_buf), port)));
+        }
+
+        Ok(MemberResponse{
+            group,
+            member_number,
+            peers,
+        })
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chat {
     group: [u8; 32],
     // TODO: needs to be extended to support more characters
@@ -232,91 +266,103 @@ pub struct Chat {
 }
 
 
-impl Into<Vec<u8>> for Chat {
-    fn into(self) -> Vec<u8> {
-        let mut buf = [0; 64];
-        self.encode_as_be_bytes(&mut buf);
-        buf.to_vec()
-    }
-}
+// impl Into<Vec<u8>> for Chat {
+//     fn into(self) -> Vec<u8> {
+//         let mut buf = [0; 64];
+//         self.encode_as_be_bytes(&mut buf);
+//         buf.to_vec()
+//     }
+// }
 
-impl From<Vec<u8>> for Chat {
-    fn from(mut vec: Vec<u8>) -> Self {
-        vec.resize(64, 0);
-        Chat::decode_from_be_bytes(&vec)
-    }
-}
+// impl From<Vec<u8>> for Chat {
+//     fn from(mut vec: Vec<u8>) -> Self {
+//         vec.resize(64, 0);
+//         Chat::decode_from_be_bytes(&vec)
+//     }
+// }
 
-impl MessageContent for Chat {}
+// impl MessageContent for Chat {}
 
-impl Chat {
-    pub fn new(group: &str, msg: &str) -> Result<Chat, FormatError> {
-        let mut grp_buf: [u8; 32]= [0; 32];
-        let mut msg_buf: [u8; 32]= [0; 32];
-        grp_buf[0..group.len()].copy_from_slice(group.as_bytes());
-        msg_buf[0..msg.len()].copy_from_slice(msg.as_bytes());
+// impl Chat {
+//     pub fn new(group: &str, msg: &str) -> Result<Chat, FormatError> {
+//         let mut grp_buf: [u8; 32]= [0; 32];
+//         let mut msg_buf: [u8; 32]= [0; 32];
+//         grp_buf[0..group.len()].copy_from_slice(group.as_bytes());
+//         msg_buf[0..msg.len()].copy_from_slice(msg.as_bytes());
 
-        Ok(Chat{
-            group: grp_buf,
-            data: msg_buf,
-        })
-    }
+//         Ok(Chat{
+//             group: grp_buf,
+//             data: msg_buf,
+//         })
+//     }
 
-    pub fn msg(&self) -> Result<&str, FormatError> {
-        std::str::from_utf8(&self.data).map_err(|err| FormatError { error: err.to_string() })
-    }
+//     pub fn msg(&self) -> Result<&str, FormatError> {
+//         std::str::from_utf8(&self.data).map_err(|err| FormatError { error: err.to_string() })
+//     }
 
-    pub fn group_name(&self) -> Result<String, FormatError> {
-        String::from_utf8(self.group.into_iter().filter(|&p| p != 0).collect())
-            .map(|res| res.trim().to_string())
-            .map_err(|err| FormatError { error: err.to_string() })
-    }
-}
+//     pub fn group_name(&self) -> Result<String, FormatError> {
+//         String::from_utf8(self.group.into_iter().filter(|&p| p != 0).collect())
+//             .map(|res| res.trim().to_string())
+//             .map_err(|err| FormatError { error: err.to_string() })
+//     }
+// }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
-pub struct Empty {}
-
-impl MessageContent for Empty {}
-
-impl Empty {
-    pub fn new() -> Empty {
-        Empty {  }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PackedSize, EncodeBE, DecodeBE)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Message<T> 
     where T: MessageContent {
     header: Header,
-    content: T,
+    content: Option<T>,
 }
 
 impl<T> Message<T> where T: MessageContent {
     pub fn new(header: Header, content: T) -> Message<T> {
-        Message { header, content }
+        Message { header, content: Some(content), }
     }
 
     pub fn header(&self) -> &Header {
         &self.header
     }
 
-    pub fn content(&self) -> &T {
-        &self.content
+    pub fn content(&self) -> Option<&T> {
+        self.content.as_ref()
     }
 }
 
 impl<T> Into<Vec<u8>> for Message<T> where T: MessageContent {
     fn into(self) -> Vec<u8> {
-        let mut buf = [0; 576];
-        self.encode_as_be_bytes(&mut buf);
-        buf.to_vec()
+        // let mut buf = [0; 576];
+        // self.encode_as_be_bytes(&mut buf);
+        // buf.to_vec()
+        let mut msg_bytes: Vec<u8> = self.header.into();
+        if let Some(content) = self.content {
+            msg_bytes.extend(content.into());
+        }
+        msg_bytes
     }
 }
 
-impl<T> From<Vec<u8>> for Message<T> where T: MessageContent {
-    fn from(mut vec: Vec<u8>) -> Self {
-        vec.resize(576, 0);
-        Message::decode_from_be_bytes(&vec)
+impl<T> TryFrom<Vec<u8>> for Message<T> where T: MessageContent {
+    type Error = FormatError;
+
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        let mut reader = Cursor::new(value);
+
+        let mut header_bytes: [u8; 4] = [0; 4];
+        reader.read_exact(&mut header_bytes).unwrap();
+
+        // TODO: handle error
+        let header = Header::try_from(header_bytes.to_vec()).unwrap();
+
+        let mut content_bytes: Vec<u8> = vec![0; header.msg_size().into()];
+        reader.read_exact(&mut content_bytes).unwrap();
+
+        let content = T::try_from(content_bytes)
+            .map_err(|_err| FormatError { error: "Error converting message content".to_string() })?;
+
+        Ok(Message {
+            header,
+            content: Some(content),
+        })
     }
 }
 
@@ -338,46 +384,39 @@ mod tests {
 
     #[test]
     fn member_request_serialization() {
-        let req = MemberRequest::new("my-group").unwrap();
+        let req = MemberRequest::new("peer-A", "my-group").unwrap();
         let buf: Vec<u8> = req.into();
         assert_eq!(buf[0..8], *"my-group".as_bytes());
-
-        let req2 = MemberRequest::new("my-second-group").unwrap();
-        let str: String = req2.try_into().unwrap();
-        assert_eq!(str, "my-second-group");
     }
 
     #[test]
     fn member_request_deserialization() {
-        let req = MemberRequest::from("my-group".as_bytes().to_vec());
-        assert_eq!(req.group[0..8], *"my-group".as_bytes());
+        let req = MemberRequest::new("peer1", "my-group").unwrap();
+
+        let bytes: Vec<u8> = req.into();
+
+        let req2 = MemberRequest::try_from(bytes).unwrap();
+        assert_eq!(req2.group, "my-group");
+        assert_eq!(req2.peer_id, "peer1");
     }
 
     #[test]
     fn member_response_serialization() {
-        let addrs = vec![
-            "11.22.33.44:1234".parse().unwrap(),
-            "255.0.0.1:65511".parse().unwrap(),
+        let peers = vec![
+            ("peer-A".to_string(), "11.22.33.44:1234".parse().unwrap()),
+            ("peer-B".to_string(), "255.0.0.1:65511".parse().unwrap()),
         ];
-        let res = MemberResponse::new("my-group", addrs).unwrap();
+        let res = MemberResponse::new("my-group", peers).unwrap();
         let buf: Vec<u8> = res.into();
 
-        assert_eq!(buf[0..8], *"my-group".as_bytes());
+        let res2 = MemberResponse::try_from(buf).unwrap();
 
-        // Member count
-        assert_eq!(buf[32..36], vec![0, 0, 0, 2]);
+        assert_eq!(res2.group, "my-group".to_string());
 
-        // First IP
-        assert_eq!(buf[36..40], vec![11, 22, 33, 44]);
+        assert_eq!(res2.member_number, 2);
 
-        // First port
-        assert_eq!(buf[40..42], vec![0x04, 0xD2]);
-
-        // Second IP
-        assert_eq!(buf[42..46], vec![255, 0, 0, 1]);
-
-        // Second port
-        assert_eq!(buf[46..48], vec![0xFF, 0xE7]);
+        assert_eq!(res2.peers[0], ("peer-A".to_string(), "11.22.33.44:1234".parse().unwrap()));
+        assert_eq!(res2.peers[1],  ("peer-B".to_string(), "255.0.0.1:65511".parse().unwrap()));
     }
 
     #[test]
@@ -386,33 +425,25 @@ mod tests {
             // group name
             'g' as u8, 'r' as u8, 'p' as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             // member count
-            0, 0, 0, 2,
+            2,
+            // First peer name
+            'p' as u8, 'e' as u8, 'e' as u8, 'r' as u8, 'A' as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             // First IP and port
             11, 22, 255, 0, 0x04, 0xD2,
+            // Second peer name
+            'p' as u8, 'e' as u8, 'e' as u8, 'r' as u8, 'B' as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             // Second IP and port
             255, 0, 1, 1, 0xFD, 0xFE,
         ];
-        let res = MemberResponse::from(data.to_vec());
+        let res = MemberResponse::try_from(data.to_vec()).unwrap();
 
-        assert_eq!(res.group[0..3], *"grp".as_bytes());
+        assert_eq!(res.group, "grp".to_string());
 
         // Member count
         assert_eq!(res.member_number, 2);
 
-        // First IP
-        assert_eq!(res.data[0..4], vec![11, 22, 255, 0]);
-
-        // First port
-        assert_eq!(res.data[4..6], vec![0x04, 0xD2]);
-
-        // Second IP
-        assert_eq!(res.data[6..10], vec![255, 0, 1, 1]);
-
-        // Second port
-        assert_eq!(res.data[10..12], vec![0xFD, 0xFE]);
-
-        let mut peers = res.peers();
-        assert_eq!(peers.pop().unwrap(), SocketAddr::new("255.0.1.1".parse().unwrap(), 65022));
-        assert_eq!(peers.pop().unwrap(), SocketAddr::new("11.22.255.0".parse().unwrap(), 1234));
+        let peers = res.peers();
+        assert_eq!(peers[0], ("peerA".to_string(), SocketAddr::new("11.22.255.0".parse().unwrap(), 1234)));
+        assert_eq!(peers[1], ("peerB".to_string(), SocketAddr::new("255.0.1.1".parse().unwrap(), 65022)));
     }
 }

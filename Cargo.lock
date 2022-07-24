@@ -26,6 +26,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
+name = "byteorder"
+version = "1.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
+
+[[package]]
 name = "clap"
 version = "3.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -69,26 +75,6 @@ name = "crossbeam"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bd66663db5a988098a89599d4857919b3acf7f61402e61365acfd3919857b9be"
-
-[[package]]
-name = "endian_codec"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6cec890fb7e3b0517206e7c841822aef050c36d1b73a4ab9efe044142632d73"
-dependencies = [
- "endian_codec_derive",
-]
-
-[[package]]
-name = "endian_codec_derive"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "178778b80c6a219a9c75e6f309ed7cec7b5413c33269c68614125d8491fc413d"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "fuchsia-cprng"
@@ -203,8 +189,8 @@ dependencies = [
 name = "peerko"
 version = "0.0.1"
 dependencies = [
+ "byteorder",
  "clap",
- "endian_codec",
  "multiqueue",
 ]
 

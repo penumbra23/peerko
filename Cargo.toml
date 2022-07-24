@@ -5,6 +5,6 @@ edition = "2021"
 authors = ["penumbra23"]
 
 [dependencies]
-endian_codec = "0.1.1"
 clap = { version = "3.2.6", features = ["derive"] }
 multiqueue = "0.3.2"
+byteorder = "1.4.3"
