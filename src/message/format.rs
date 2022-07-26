@@ -141,7 +141,7 @@ impl TryFrom<Vec<u8>> for MemberRequest {
     type Error = FormatError;
 
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        let mut reader = Cursor::new(value);
+        let mut reader = Cursor::new(&value);
 
         let mut grp_buf = vec![0; 32];
         let mut peer_id_buf = vec![0; 32];
@@ -260,52 +260,65 @@ impl TryFrom<Vec<u8>> for MemberResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chat {
-    group: [u8; 32],
-    // TODO: needs to be extended to support more characters
-    data: [u8; 32],
+    peer_id: String,
+    msg: String,
 }
 
 
-// impl Into<Vec<u8>> for Chat {
-//     fn into(self) -> Vec<u8> {
-//         let mut buf = [0; 64];
-//         self.encode_as_be_bytes(&mut buf);
-//         buf.to_vec()
-//     }
-// }
+impl Into<Vec<u8>> for Chat {
+    fn into(self) -> Vec<u8> {
+        let msg_size = 33 + self.msg.len();
+        let mut buf = vec![0; msg_size];
 
-// impl From<Vec<u8>> for Chat {
-//     fn from(mut vec: Vec<u8>) -> Self {
-//         vec.resize(64, 0);
-//         Chat::decode_from_be_bytes(&vec)
-//     }
-// }
+        buf[0..self.peer_id.len()].copy_from_slice(self.peer_id.as_bytes());
+        buf[32] = self.msg.len() as u8;
+        buf[33..msg_size].copy_from_slice(self.msg.as_bytes());
+        buf
+    }
+}
 
-// impl MessageContent for Chat {}
+impl TryFrom<Vec<u8>> for Chat {
+    type Error = FormatError;
 
-// impl Chat {
-//     pub fn new(group: &str, msg: &str) -> Result<Chat, FormatError> {
-//         let mut grp_buf: [u8; 32]= [0; 32];
-//         let mut msg_buf: [u8; 32]= [0; 32];
-//         grp_buf[0..group.len()].copy_from_slice(group.as_bytes());
-//         msg_buf[0..msg.len()].copy_from_slice(msg.as_bytes());
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        let mut reader = Cursor::new(value);
+        let mut peer_id_buf = vec![0; 32];
+        
+        reader.read_exact(&mut peer_id_buf).unwrap();
 
-//         Ok(Chat{
-//             group: grp_buf,
-//             data: msg_buf,
-//         })
-//     }
+        let peer_id = String::from_utf8(peer_id_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
 
-//     pub fn msg(&self) -> Result<&str, FormatError> {
-//         std::str::from_utf8(&self.data).map_err(|err| FormatError { error: err.to_string() })
-//     }
+        let msg_len = reader.read_u8().unwrap() as usize;
+        let mut msg_buf = vec![0; msg_len];
 
-//     pub fn group_name(&self) -> Result<String, FormatError> {
-//         String::from_utf8(self.group.into_iter().filter(|&p| p != 0).collect())
-//             .map(|res| res.trim().to_string())
-//             .map_err(|err| FormatError { error: err.to_string() })
-//     }
-// }
+        reader.read_exact(&mut msg_buf).unwrap();
+        let msg = String::from_utf8(msg_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
+
+        Ok(Chat{
+            peer_id,
+            msg,
+        })
+    }
+}
+
+impl MessageContent for Chat {}
+
+impl Chat {
+    pub fn new(peer_id: String, msg: &String) -> Chat {
+        Chat{
+            peer_id,
+            msg: msg.clone(),
+        }
+    }
+
+    pub fn msg(&self) -> &str {
+        &self.msg
+    }
+
+    pub fn peer_id(&self) -> String {
+        self.peer_id.clone()
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Message<T> 
@@ -315,8 +328,8 @@ pub struct Message<T>
 }
 
 impl<T> Message<T> where T: MessageContent {
-    pub fn new(header: Header, content: T) -> Message<T> {
-        Message { header, content: Some(content), }
+    pub fn new(header: Header, content: Option<T>) -> Message<T> {
+        Message { header, content }
     }
 
     pub fn header(&self) -> &Header {
@@ -345,7 +358,7 @@ impl<T> TryFrom<Vec<u8>> for Message<T> where T: MessageContent {
     type Error = FormatError;
 
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        let mut reader = Cursor::new(value);
+        let mut reader = Cursor::new(&value);
 
         let mut header_bytes: [u8; 4] = [0; 4];
         reader.read_exact(&mut header_bytes).unwrap();
@@ -353,7 +366,9 @@ impl<T> TryFrom<Vec<u8>> for Message<T> where T: MessageContent {
         // TODO: handle error
         let header = Header::try_from(header_bytes.to_vec()).unwrap();
 
-        let mut content_bytes: Vec<u8> = vec![0; header.msg_size().into()];
+        let content_size = value.len() - 4;
+
+        let mut content_bytes: Vec<u8> = vec![0; content_size];
         reader.read_exact(&mut content_bytes).unwrap();
 
         let content = T::try_from(content_bytes)
