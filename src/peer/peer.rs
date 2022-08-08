@@ -1,4 +1,6 @@
-use std::{net::SocketAddr, error::Error, fmt::Display, sync::{atomic::{AtomicBool, Ordering}, Arc, mpsc::{Receiver, channel, Sender}, Mutex}, collections::HashMap};
+use std::{net::SocketAddr, error::Error, fmt::Display, sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex}, collections::HashMap};
+
+use crossbeam_channel::{unbounded, Sender, Receiver};
 
 use crate::{transport::{udp::UdpTransport, common::{TransportPacket, Transport}}, message::{format::{Message, Chat, Header, MessageType, MemberRequest, MemberResponse, MessageContent, FormatError}, self}};
 
@@ -23,11 +25,15 @@ pub struct Peer {
     tx: Sender<String>,
     rx: Receiver<String>,
     peer_map: Arc<Mutex<HashMap::<String, Vec<(String, SocketAddr)>>>>,
+
+    msg_tx: Sender<(String, String)>,
+    msg_rx: Receiver<(String, String)>,
 }
 
 impl Peer {
     pub fn new(name: String, group: String, port: u16, bootstrap: Option<SocketAddr>) -> Result<Peer, Box<dyn Error>> {
-        let (tx, rx) = channel();
+        let (tx, rx) = unbounded();
+        let (msg_tx, msg_rx) = unbounded();
         let peer_map = Arc::new(Mutex::new(HashMap::<String, Vec<(String, SocketAddr)>>::new()));
         Ok(Peer {
             name,
@@ -38,6 +44,7 @@ impl Peer {
             is_running: Arc::new(AtomicBool::new(false)),
             rx, tx,
             peer_map,
+            msg_tx, msg_rx,
         })
     }
 
@@ -47,6 +54,10 @@ impl Peer {
 
     pub fn tx(&self) -> Sender<String> {
         self.tx.clone()
+    }
+
+    pub fn msg_rx(&self) -> Receiver<(String, String)> {
+        self.msg_rx.clone()
     }
 
     pub fn send_req(&self, peer_socket: SocketAddr) {
@@ -61,7 +72,6 @@ impl Peer {
 
     pub fn run(&mut self) -> ! {
         let alive_peer_map_lock = self.peer_map.clone();
-        let chat_peer_map_lock = self.peer_map.clone();
         let handler_peer_map_lock = self.peer_map.clone();
 
         let recv_sock = self.transport.try_clone().unwrap();
@@ -82,6 +92,8 @@ impl Peer {
             }
         });
     
+        let msg_sender = self.msg_tx.clone();
+
         // Handles response messages
         std::thread::spawn(move || {
             loop {
@@ -154,7 +166,7 @@ impl Peer {
                     MessageType::Chat => {
                         let msg = Message::<Chat>::try_from(packet.data).unwrap();
                         let content = msg.content().unwrap();
-                        println!("{}: {}", content.peer_id(), content.msg());
+                        msg_sender.send((content.peer_id(), content.msg().to_string())).unwrap();
                     },
                 }
             }

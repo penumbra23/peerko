@@ -8,3 +8,7 @@ authors = ["penumbra23"]
 clap = { version = "3.2.6", features = ["derive"] }
 multiqueue = "0.3.2"
 byteorder = "1.4.3"
+crossterm = "0.24.0"
+tui = "0.18.0"
+unicode-width = "0.1.9"
+crossbeam-channel = "0.5"
