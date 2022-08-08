@@ -17,7 +17,7 @@ use tui::{
 use unicode_width::UnicodeWidthStr;
 
 use clap::Parser;
-use peer::peer::Peer;
+use peer::Peer;
 
 mod transport;
 mod message;
@@ -169,14 +169,14 @@ fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &App) {
         chunks[2].y + 1,
     );
 
-    let messages: Vec<ListItem> = app
-        .messages
-        .lock().unwrap()
+    let messages = app.messages.lock().unwrap();
+
+    let messages: Vec<ListItem> = messages
         .iter()
         .enumerate()
         .rev()
         .map(|(_, m)| {
-            let content = vec![Spans::from(Span::raw(format!("{}", m)))];
+            let content = vec![Spans::from(Span::raw(m))];
             ListItem::new(content)
         })
         .collect();

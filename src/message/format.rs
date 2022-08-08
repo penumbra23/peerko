@@ -4,11 +4,6 @@ use byteorder::{WriteBytesExt, BigEndian, ReadBytesExt};
 
 const MAGIC_HEADER: u8 = 0x9D;
 
-fn vec_to_sized_array<T, const N: usize>(vec: Vec<T>) -> Result<[T; N], FormatError> {
-    vec.try_into()
-        .map_err(|_| FormatError { error: String::from("Vec to sized array failed") })
-}
-
 #[derive(Clone, Debug)]
 pub struct FormatError {
     pub error: String,
@@ -43,10 +38,6 @@ impl Header {
 
     pub fn msg_type(&self) -> MessageType {
         self.msg_type
-    }
-
-    pub fn msg_size(&self) -> u16 {
-        self.size
     }
 }
 
@@ -237,7 +228,7 @@ impl TryFrom<Vec<u8>> for MemberResponse {
 
         let mut peers: Vec<(String, SocketAddr)> = Vec::new();
 
-        for i in 0..member_number {
+        for _ in 0..member_number {
             let mut peer_id_buf = vec![0; 32];
             reader.read_exact(&mut peer_id_buf).unwrap();
             let peer_id = String::from_utf8(peer_id_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
@@ -304,10 +295,10 @@ impl TryFrom<Vec<u8>> for Chat {
 impl MessageContent for Chat {}
 
 impl Chat {
-    pub fn new(peer_id: String, msg: &String) -> Chat {
+    pub fn new(peer_id: String, msg: &str) -> Chat {
         Chat{
             peer_id,
-            msg: msg.clone(),
+            msg: msg.to_owned(),
         }
     }
 
@@ -330,10 +321,6 @@ pub struct Message<T>
 impl<T> Message<T> where T: MessageContent {
     pub fn new(header: Header, content: Option<T>) -> Message<T> {
         Message { header, content }
-    }
-
-    pub fn header(&self) -> &Header {
-        &self.header
     }
 
     pub fn content(&self) -> Option<&T> {
@@ -382,9 +369,7 @@ impl<T> TryFrom<Vec<u8>> for Message<T> where T: MessageContent {
 }
 
 mod tests {
-    use std::net::SocketAddr;
-
-    use super::{Header, MAGIC_HEADER, MessageType, MemberRequest, MemberResponse};
+    use super::*;
 
     #[test]
     fn header_serialization() {
