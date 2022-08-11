@@ -1,11 +1,26 @@
-use std::{net::SocketAddr, error::Error, sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex}, collections::HashMap};
+use std::{net::SocketAddr, error::Error, sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, LockResult}, collections::HashMap, time::{SystemTime, Duration, Instant}, ops::Add};
 
 use crossbeam_channel::{unbounded, Sender, Receiver};
 
-use crate::{transport::{udp::UdpTransport, common::{TransportPacket, Transport}}, message::{format::{Message, Chat, Header, MessageType, MemberRequest, MemberResponse}, self}};
+use crate::{transport::{udp::UdpTransport, common::{TransportPacket, Transport}}, message::{format::{Message, Chat, Header, MessageType, MemberRequest, MemberResponse, Alive}, self}};
 
-/// ID of the peer. Needs to be unique for each peer on the group.
-type PeerId = String;
+use self::structures::{PeerId, NeighbourMap, NeighbourEntry};
+
+mod structures;
+
+pub trait LockResultExt {
+    type Guard;
+
+    fn ignore_poison(self) -> Self::Guard;
+}
+
+impl<Guard> LockResultExt for LockResult<Guard> {
+    type Guard = Guard;
+
+    fn ignore_poison(self) -> Guard {
+        self.unwrap_or_else(|e| e.into_inner())
+    }
+}
 
 /// Instance of a peer. 
 /// Encapsulates the neighbour map, network transport and manages
@@ -19,7 +34,7 @@ pub struct Peer {
     is_running: Arc<AtomicBool>,
     tx: Sender<String>,
     rx: Receiver<String>,
-    peer_map: Arc<Mutex<HashMap::<String, Vec<(String, SocketAddr)>>>>,
+    peer_map: Arc<Mutex<HashMap::<String, NeighbourMap>>>,
 
     msg_tx: Sender<(String, String)>,
     msg_rx: Receiver<(String, String)>,
@@ -29,7 +44,7 @@ impl Peer {
     pub fn new(name: String, group: String, port: u16, bootstrap: Option<SocketAddr>) -> Result<Peer, Box<dyn Error>> {
         let (tx, rx) = unbounded();
         let (msg_tx, msg_rx) = unbounded();
-        let peer_map = Arc::new(Mutex::new(HashMap::<String, Vec<(String, SocketAddr)>>::new()));
+        let peer_map = Arc::new(Mutex::new(HashMap::new()));
         Ok(Peer {
             name,
             group,
@@ -78,23 +93,25 @@ impl Peer {
         let recv_sock = self.transport.try_clone().unwrap();
         let cmd_sock = self.transport.try_clone().unwrap();
 
+        let alive_packet = Alive::new(self.name.clone());
         // Thread for sending the Alive message to all neighbours
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(5));
-                let peer_map = alive_peer_map_lock.lock().unwrap();
-        
-                for (_, peer_list) in peer_map.iter() {
+                let mut peer_map = alive_peer_map_lock.lock().ignore_poison();
+
+                for (_, peer_list) in peer_map.iter_mut() {
+                    peer_list.remove_expired();
                     for peer in peer_list.iter() {
-                        let msg = Message::<Chat>::new(Header::new(1, MessageType::Alive, 0), None);
-                        alive_sock.send(TransportPacket { socket_addr: peer.1, data: msg.into() }).unwrap();
+                        let msg = Message::<Alive>::new(Header::new(1, MessageType::Alive, 0), Some(alive_packet.clone()));
+                        // TODO: log error
+                        alive_sock.send(TransportPacket { socket_addr: peer.addr().clone(), data: msg.into() });
                     }
                 }
             }
         });
     
         let msg_sender = self.msg_tx.clone();
-
         // Handler thread for incoming packets
         std::thread::spawn(move || {
             loop {
@@ -102,65 +119,88 @@ impl Peer {
                 let packet = match recv_sock.recv() {
                     Ok(p) => p,
                     Err(err) => {
-                        println!("error: {}", err);
+                        // TODO: log error
                         continue;
                     },
                 };
     
                 // Parse the header (first 4 bytes)
                 let header_bytes = &packet.data[0..4];
-                let header = Header::try_from(header_bytes.to_vec()).unwrap();
+                let header = match Header::try_from(header_bytes.to_vec()) {
+                    Ok(h) => h,
+                    Err(_) => {
+                        // TODO: log error
+                        continue;
+                    },
+                };
     
                 // Route answer based on input
                 match header.msg_type() {
                     // Alive should update the TTL inside the peer map
-                    MessageType::Alive => (),
+                    MessageType::Alive => {
+                        let msg = Message::<Alive>::try_from(packet.data).unwrap();
+                        let content = msg.content().unwrap();
+                        let peer_id = content.peer_id();
+
+                        let mut group_map = handler_peer_map_lock.lock().ignore_poison();
+
+                        for (_, peer_list) in group_map.iter_mut() {
+                            if peer_list.contains_peer(peer_id) {
+                                peer_list.find_peer_mut(peer_id).unwrap().update_ttl(Duration::from_secs(10));
+                            }
+                        }
+                    },
                     MessageType::MemberReq => {
                         let msg = Message::<MemberRequest>::try_from(packet.data).unwrap();
                         let content = msg.content().unwrap();
                         let group_name = content.group_name();
                         let peer_id = content.peer_id();
-    
-                        let mut peer_map = handler_peer_map_lock.lock().unwrap();
-    
-                        if !peer_map.contains_key(&group_name) {
-                            peer_map.insert(group_name.clone(), Vec::new());
+                        
+                        let mut group_map = handler_peer_map_lock.lock().ignore_poison();
+                        
+                        if !group_map.contains_key(group_name) {
+                            group_map.insert(group_name.to_string(), NeighbourMap::new());
                         }
-    
-                        let peer_list = peer_map.get_mut(&group_name).unwrap();
-    
-                        if !peer_list.contains(&(peer_id.clone(), packet.socket_addr)) {
-                            peer_list.push((peer_id, packet.socket_addr));
+                        
+                        let peer_list = group_map.get_mut(group_name).unwrap();
+                        
+                        if !peer_list.contains_peer(&peer_id) {
+                            let ttl = Instant::now().add(Duration::from_secs(30));
+                            peer_list.insert(NeighbourEntry::new(peer_id, packet.socket_addr, ttl));
                         }
-    
+                        
                         let peer_id = content.peer_id();
-                        let response_peers = peer_list.clone().drain(..).filter(|s| s.0 != peer_id.clone()).collect();
+                        let response_peers = peer_list
+                            .clone()
+                            .iter()
+                            .filter(|s| *s.id() != peer_id.clone())
+                            .map(|e| (e.id().clone(), e.addr().clone()))
+                            .collect();
     
                         let res_msg = Message::<MemberResponse>::new(
                             Header::new(1, MessageType::MemberRes, 0),
                             Some(MemberResponse::new(&group_name, response_peers).unwrap())
                         );
-    
                         recv_sock.send(TransportPacket { socket_addr: packet.socket_addr, data: res_msg.into() }).unwrap();
                     },
                     MessageType::MemberRes => {
                         let msg = Message::<MemberResponse>::try_from(packet.data).unwrap();
-    
                         let content = msg.content().unwrap();
                         let peers = content.peers();
                         let group_name = content.group_name();
     
-                        let mut peer_map = handler_peer_map_lock.lock().unwrap();
-    
+                        let mut peer_map = handler_peer_map_lock.lock().ignore_poison();
+                        
                         if !peer_map.contains_key(&group_name) {
-                            peer_map.insert(group_name.clone(), Vec::new());
+                            peer_map.insert(group_name.clone(), NeighbourMap::new());
                         }
     
                         let peer_list = peer_map.get_mut(&group_name).unwrap();
-    
-                        for peer in peers {
-                            if !peer_list.contains(&peer.clone()) {
-                                peer_list.push(peer.clone());
+                        
+                        for (peer_id, peer_addr) in peers {
+                            if !peer_list.contains_peer(peer_id) {
+                                let ttl = Instant::now().add(Duration::from_secs(30));
+                                peer_list.insert(NeighbourEntry::new(peer_id.to_string(), *peer_addr, ttl));
                             }
                         }
                     },
@@ -188,13 +228,13 @@ impl Peer {
                     // req - send a MemberRequest to all peers to discover newly added ones
                     match cmd_str.trim() {
                         "peers" => {
-                            cmd_sender.send((self.name.clone(), format!("{:?}", self.peer_map.lock().unwrap()))).unwrap();
+                            cmd_sender.send((self.name.clone(), format!("{:?}", self.peer_map.lock().ignore_poison()))).unwrap();
                             continue;
                         },
                         "req" => {
-                            for (_group, peer_list) in self.peer_map.lock().unwrap().iter() {
+                            for (_group, peer_list) in self.peer_map.lock().ignore_poison().iter() {
                                 for peer in peer_list.iter() {
-                                    self.send_req(peer.1);
+                                    self.send_req(peer.addr().clone());
                                 }
                             }
                             continue;
@@ -203,12 +243,12 @@ impl Peer {
                     }
 
                     let header = Header::new(1, message::format::MessageType::Chat, cmd_str.len().try_into().unwrap());
-                    for (_group, peer_list) in self.peer_map.lock().unwrap().iter() {
+                    for (_group, peer_list) in self.peer_map.lock().ignore_poison().iter() {
                         for peer in peer_list.iter() {
                             let chat = Chat::new(self.name.clone(), &cmd_str);
                             let msg = Message::<Chat>::new(header, Some(chat));
                             cmd_sock.send(TransportPacket {
-                                socket_addr: peer.1,
+                                socket_addr: peer.addr().clone(),
                                 data: msg.into(),
                             }).unwrap();
                         }

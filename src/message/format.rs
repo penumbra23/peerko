@@ -57,6 +57,11 @@ impl TryFrom<Vec<u8>> for Header {
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
         let mut reader = Cursor::new(value);
         let magic_bytes = reader.read_u8().unwrap();
+
+        if magic_bytes != MAGIC_HEADER {
+            return Err(FormatError { error: String::from("magic header mismatch") });
+        }
+
         let version_type = reader.read_u8().unwrap();
         let size = reader.read_u16::<BigEndian>().unwrap();
         Ok(Header {
@@ -90,6 +95,48 @@ impl From<u8> for MessageType {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Alive {
+    peer_id: String,
+}
+
+impl MessageContent for Alive {}
+
+impl Alive {
+    pub fn new(peer_id: String) -> Alive {
+        Alive { peer_id }
+    }
+
+    pub fn peer_id(&self) -> &str {
+        &self.peer_id
+    }
+}
+
+impl Into<Vec<u8>> for Alive {
+    fn into(self) -> Vec<u8> {
+        let mut buf = vec![0u8; 32];
+        buf[0..self.peer_id.len()].copy_from_slice(&self.peer_id.as_bytes());
+        buf
+    }
+}
+
+impl TryFrom<Vec<u8>> for Alive {
+    type Error = FormatError;
+
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        let mut reader = Cursor::new(&value);
+
+        let mut peer_id_buf = vec![0; 32];
+        reader.read_exact(&mut peer_id_buf).unwrap();
+
+        let peer_id = String::from_utf8(peer_id_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
+
+        Ok(Alive {
+            peer_id,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemberRequest {
     peer_id: String,
     group: String,
@@ -110,8 +157,8 @@ impl MemberRequest {
         Ok(MemberRequest { group: group.to_string(),  peer_id: peer_id.to_string() })
     }
 
-    pub fn group_name(&self) -> String {
-        self.group.clone()
+    pub fn group_name(&self) -> &str {
+        &self.group
     }
 
     pub fn peer_id(&self) -> String {
