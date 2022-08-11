@@ -1,22 +1,17 @@
-use std::{net::SocketAddr, error::Error, fmt::Display, sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex}, collections::HashMap};
+use std::{net::SocketAddr, error::Error, sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex}, collections::HashMap};
 
 use crossbeam_channel::{unbounded, Sender, Receiver};
 
 use crate::{transport::{udp::UdpTransport, common::{TransportPacket, Transport}}, message::{format::{Message, Chat, Header, MessageType, MemberRequest, MemberResponse}, self}};
 
-#[derive(Clone, Debug)]
-struct PeerError {
-    msg: String,
-}
+/// ID of the peer. Needs to be unique for each peer on the group.
+type PeerId = String;
 
-impl Display for PeerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Peer error: {}", self.msg)
-    }
-}
-
+/// Instance of a peer. 
+/// Encapsulates the neighbour map, network transport and manages
+/// communication with other peers inside the group.
 pub struct Peer {
-    name: String,
+    name: PeerId,
     group: String,
     port: u16,
     bootstrap: Option<SocketAddr>,
@@ -52,15 +47,17 @@ impl Peer {
         self.is_running.load(Ordering::Relaxed)
     }
 
-    pub fn tx(&self) -> Sender<String> {
+    /// Returns a sender for sending commands to the peer.
+    pub fn msg_sender(&self) -> Sender<String> {
         self.tx.clone()
     }
 
-    pub fn msg_rx(&self) -> Receiver<(String, String)> {
+    /// Returns the receiver for capturing messages from other peers.
+    pub fn msg_receiver(&self) -> Receiver<(PeerId, String)> {
         self.msg_rx.clone()
     }
 
-    pub fn send_req(&self, peer_socket: SocketAddr) {
+    fn send_req(&self, peer_socket: SocketAddr) {
         let header = Header::new(1, message::format::MessageType::MemberReq, 64);
         let msg = Message::<MemberRequest>::new(header, Some(MemberRequest::new(&self.name.clone(), &self.group).unwrap()));
         let buf: Vec<u8> = msg.into();
@@ -70,14 +67,18 @@ impl Peer {
         }).unwrap();
     }
 
+    /// After calling this method, the current thread blocks
+    /// The peer listens for incoming messages or commands, sends requests to other peers
+    /// and maintains the connection with neighbours.
     pub fn run(&mut self) -> ! {
         let alive_peer_map_lock = self.peer_map.clone();
         let handler_peer_map_lock = self.peer_map.clone();
 
-        let recv_sock = self.transport.try_clone().unwrap();
         let alive_sock = self.transport.try_clone().unwrap();
+        let recv_sock = self.transport.try_clone().unwrap();
         let cmd_sock = self.transport.try_clone().unwrap();
 
+        // Thread for sending the Alive message to all neighbours
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(5));
@@ -94,7 +95,7 @@ impl Peer {
     
         let msg_sender = self.msg_tx.clone();
 
-        // Handles response messages
+        // Handler thread for incoming packets
         std::thread::spawn(move || {
             loop {
                 // Receive the packet
@@ -112,7 +113,7 @@ impl Peer {
     
                 // Route answer based on input
                 match header.msg_type() {
-                    // Alive should update the TTL inside the peer map (probably)
+                    // Alive should update the TTL inside the peer map
                     MessageType::Alive => (),
                     MessageType::MemberReq => {
                         let msg = Message::<MemberRequest>::try_from(packet.data).unwrap();
@@ -175,13 +176,19 @@ impl Peer {
         if let Some(bootstrap) = self.bootstrap {
             self.send_req(bootstrap);
         }
+
+        let cmd_sender = self.msg_tx.clone();
         
+        // The main thread catches the incoming commands from the msg_sender
         loop {
             match self.rx.recv() {
                 Ok(cmd_str) => {
+                    // Matching special commands:
+                    // peers - returns a list of all neighbours
+                    // req - send a MemberRequest to all peers to discover newly added ones
                     match cmd_str.trim() {
                         "peers" => {
-                            println!("{:?}", self.peer_map.lock().unwrap());
+                            cmd_sender.send((self.name.clone(), format!("{:?}", self.peer_map.lock().unwrap()))).unwrap();
                             continue;
                         },
                         "req" => {
@@ -190,7 +197,6 @@ impl Peer {
                                     self.send_req(peer.1);
                                 }
                             }
-                            
                             continue;
                         },
                         _ => (),

@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, io::Stdout, sync::{Arc, Mutex}};
 
+use crossbeam_channel::{Receiver, Sender};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -66,77 +67,6 @@ fn setup_app() -> Result<(Terminal<CrosstermBackend<Stdout>>, App), Box<dyn Erro
     Ok((terminal, app))
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let args = CliArgs::parse();
-    
-    // Run peer app
-    let mut peer = Peer::new(args.name.clone(), args.group, args.port, args.bootstrap).unwrap();
-    
-
-    let peer_cmd = peer.tx();
-    let peer_msg = peer.msg_rx();
-
-    let peer_thread = std::thread::spawn(move||{
-        peer.run();
-    });
-
-    let server_mode = args.server_mode.unwrap_or(false);
-
-    if !server_mode {
-        let (mut terminal, mut app) = setup_app()?;
-
-        let thread_messages = app.messages.clone();
-        std::thread::spawn(move || {
-            loop {
-                if let Ok((id, msg)) = peer_msg.recv() {
-                    thread_messages.lock().unwrap().push(format!("{}: {}", id, msg));
-                    // println!("{}", msg);
-                }
-            }
-        });
-        
-        loop {
-            terminal.draw(|f| draw_ui(f, &app))?;
-
-            if event::poll(std::time::Duration::from_millis(100))? {
-                if let Event::Key(key) = event::read()? {
-                    match key.code {
-                        KeyCode::Enter => {
-                            let line: String = app.input.drain(..).collect();
-                            peer_cmd.send(line.clone()).unwrap();
-                            app.messages.lock().unwrap().push(format!("{}: {}", args.name.clone(), line));
-                        },
-                        KeyCode::Char(c) => {
-                            app.input.push(c);
-                        }
-                        KeyCode::Backspace => {
-                            app.input.pop();
-                        }
-                        KeyCode::Esc => {
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        disable_raw_mode()?;
-        execute!(
-            terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        )?;
-        terminal.show_cursor()?;
-    }
-    
-    if server_mode {
-        peer_thread.join().unwrap();
-    }
-    Ok(())
-}
-
-
 fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -183,4 +113,77 @@ fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &App) {
     let messages =
         List::new(messages).block(Block::default().borders(Borders::ALL).title("Messages"));
     f.render_widget(messages, chunks[3]);
+}
+
+fn run_chat(peer_name: &str, msg_sender: Sender<String>, msg_receiver: Receiver<(String, String)>) -> Result<(), Box<dyn Error>> {
+    let (mut terminal, mut app) = setup_app()?;
+
+    let thread_messages = app.messages.clone();
+    std::thread::spawn(move || {
+        loop {
+            if let Ok((id, msg)) = msg_receiver.recv() {
+                thread_messages.lock().unwrap().push(format!("{}: {}", id, msg));
+            }
+        }
+    });
+    
+    loop {
+        terminal.draw(|f| draw_ui(f, &app))?;
+
+        if event::poll(std::time::Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Enter => {
+                        let line: String = app.input.drain(..).collect();
+                        msg_sender.send(line.clone()).unwrap();
+                        app.messages.lock().unwrap().push(format!("{}: {}", peer_name, line));
+                    },
+                    KeyCode::Char(c) => {
+                        app.input.push(c);
+                    }
+                    KeyCode::Backspace => {
+                        app.input.pop();
+                    }
+                    KeyCode::Esc => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let args = CliArgs::parse();
+    
+    // Run peer app
+    let mut peer = Peer::new(args.name.clone(), args.group, args.port, args.bootstrap).unwrap();
+
+    // Get the chat sender and receiver
+    let msg_sender = peer.msg_sender();
+    let msg_receiver = peer.msg_receiver();
+
+    // Run the peer in a separate thread
+    let peer_thread = std::thread::spawn(move||{
+        peer.run();
+    });
+
+    let server_mode = args.server_mode.unwrap_or(false);
+
+    if !server_mode {
+        run_chat(&args.name, msg_sender, msg_receiver).unwrap();
+    } else {
+        peer_thread.join().unwrap();
+    }
+    Ok(())
 }
