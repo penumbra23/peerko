@@ -35,7 +35,7 @@ impl NeighbourEntry {
 
 impl Debug for NeighbourEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}@{}:{:?}", self.id, self.addr, self.ttl)
+        write!(f, "{}@{}", self.id, self.addr)
     }
 }
 
@@ -61,7 +61,11 @@ impl NeighbourMap {
         self.peers.push(peer)
     }
 
-    pub fn find_peer(&mut self, peer_id: &str) -> Option<&mut NeighbourEntry> {
+    pub fn find_peer(&mut self, peer_id: &str) -> Option<&NeighbourEntry> {
+        self.peers.iter().find(|p| p.id == peer_id)
+    }
+
+    pub fn find_peer_mut(&mut self, peer_id: &str) -> Option<&mut NeighbourEntry> {
         self.peers.iter_mut().find(|p| p.id == peer_id)
     }
 
@@ -69,6 +73,10 @@ impl NeighbourMap {
         while let Some(peer_index) = self.peers.iter().position(|e| e.ttl_expired()) {
             self.peers.remove(peer_index);
         }
+    }
+
+    pub fn count(&self) -> usize {
+        self.peers.len()
     }
 
 }
@@ -95,5 +103,65 @@ impl<'a> Iterator for NeighbourMapIterator<'a> {
             },
             None => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn neighbour_entry() {
+        let ttl = Instant::now().add(Duration::from_millis(500));
+        let entry = NeighbourEntry::new("peer-a".to_string(), "127.0.0.1:2000".parse().unwrap(), ttl);
+        assert_eq!(entry.ttl_expired(), false);
+
+        std::thread::sleep(Duration::from_millis(600));
+
+        assert_eq!(entry.ttl_expired(), true);
+    }
+
+    #[test]
+    fn neighbour_map() {
+        let ttl = Instant::now().add(Duration::from_millis(500));
+        let entry1 = NeighbourEntry::new("peer-a".to_string(), "127.0.0.1:2000".parse().unwrap(), ttl);
+        let entry2 = NeighbourEntry::new("peer-b".to_string(), "127.0.0.1:2001".parse().unwrap(), ttl);
+        let entry3 = NeighbourEntry::new("peer-c".to_string(), "127.0.0.1:2002".parse().unwrap(), ttl);
+
+        let mut map = NeighbourMap::new();
+        map.insert(entry1);
+        map.insert(entry2);
+        map.insert(entry3);
+
+        assert_eq!(map.contains_peer("peer-a"), true);
+        assert_eq!(map.contains_peer("peer-123"), false);
+        let peer = map.find_peer("peer-c").unwrap();
+
+        assert_eq!(peer.addr, "127.0.0.1:2002".parse().unwrap());
+
+        let ids = vec!["peer-a", "peer-b", "peer-c"];
+        let mut i = 0;
+        for peer in map.iter() {
+            assert_eq!(peer.id, ids[i]);
+            i+=1;
+        }
+    }
+
+    #[test]
+    fn map_expiry() {
+        let ttl = Instant::now().add(Duration::from_millis(500));
+        let entry1 = NeighbourEntry::new("peer-a".to_string(), "127.0.0.1:2000".parse().unwrap(), ttl);
+        let entry2 = NeighbourEntry::new("peer-b".to_string(), "127.0.0.1:2001".parse().unwrap(), ttl);
+        let entry3 = NeighbourEntry::new("peer-c".to_string(), "127.0.0.1:2002".parse().unwrap(), ttl);
+
+        let mut map = NeighbourMap::new();
+        map.insert(entry1);
+        map.insert(entry2);
+        map.insert(entry3);
+
+        std::thread::sleep(Duration::from_millis(600));
+        map.remove_expired();
+        assert_eq!(map.count(), 0);
+
     }
 }
