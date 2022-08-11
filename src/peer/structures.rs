@@ -29,7 +29,7 @@ impl NeighbourEntry {
     }
 
     pub fn update_ttl(&mut self, value: Duration) {
-        self.ttl = self.ttl.add(value);
+        self.ttl = Instant::now().add(value);
     }
 }
 
