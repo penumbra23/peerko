@@ -8,6 +8,8 @@ use self::structures::{PeerId, NeighbourMap, NeighbourEntry};
 
 mod structures;
 
+static TTL_RENEWAL: Duration = std::time::Duration::from_secs(30);
+
 pub trait LockResultExt {
     type Guard;
 
@@ -146,7 +148,7 @@ impl Peer {
 
                         for (_, peer_list) in group_map.iter_mut() {
                             if peer_list.contains_peer(peer_id) {
-                                peer_list.find_peer_mut(peer_id).unwrap().update_ttl(Duration::from_secs(10));
+                                peer_list.find_peer_mut(peer_id).unwrap().update_ttl(TTL_RENEWAL);
                             }
                         }
                     },
@@ -165,7 +167,8 @@ impl Peer {
                         let peer_list = group_map.get_mut(group_name).unwrap();
                         
                         if !peer_list.contains_peer(&peer_id) {
-                            let ttl = Instant::now().add(Duration::from_secs(30));
+                            // Initial TTL is set to 2 minutes
+                            let ttl = Instant::now().add(TTL_RENEWAL.add(Duration::from_secs(120)));
                             peer_list.insert(NeighbourEntry::new(peer_id, packet.socket_addr, ttl));
                         }
                         
@@ -176,7 +179,7 @@ impl Peer {
                             .filter(|s| *s.id() != peer_id.clone())
                             .map(|e| (e.id().clone(), e.addr().clone()))
                             .collect();
-    
+                            
                         let res_msg = Message::<MemberResponse>::new(
                             Header::new(1, MessageType::MemberRes, 0),
                             Some(MemberResponse::new(&group_name, response_peers).unwrap())
@@ -199,7 +202,7 @@ impl Peer {
                         
                         for (peer_id, peer_addr) in peers {
                             if !peer_list.contains_peer(peer_id) {
-                                let ttl = Instant::now().add(Duration::from_secs(30));
+                                let ttl = Instant::now().add(TTL_RENEWAL);
                                 peer_list.insert(NeighbourEntry::new(peer_id.to_string(), *peer_addr, ttl));
                             }
                         }
@@ -236,6 +239,13 @@ impl Peer {
                                 for peer in peer_list.iter() {
                                     self.send_req(peer.addr().clone());
                                 }
+                            }
+                            // Send to bootstrap since he has a stable address
+                            // Although this fights the purpose of the bootstrap peer,
+                            // it's easier and faster to get a more stable connection
+                            // The proper way would be to introduce "stable peers"
+                            if let Some(bootstrap) = self.bootstrap {
+                                self.send_req(bootstrap);
                             }
                             continue;
                         },
