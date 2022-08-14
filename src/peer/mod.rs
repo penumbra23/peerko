@@ -196,7 +196,14 @@ impl Peer {
                 match header.msg_type() {
                     // Alive should update the TTL inside the peer map
                     MessageType::Alive => {
-                        let msg = Message::<Alive>::try_from(packet.data).unwrap();
+                        let msg = match Message::<Alive>::try_from(packet.data) {
+                            Ok(msg) => msg,
+                            Err(_) => {
+                                // TODO: log
+                                continue;
+                            },
+                        };
+
                         let content = msg.content().unwrap();
                         let peer_id = content.peer_id();
 
@@ -209,7 +216,14 @@ impl Peer {
                         }
                     },
                     MessageType::MemberReq => {
-                        let msg = Message::<MemberRequest>::try_from(packet.data).unwrap();
+                        let msg = match Message::<MemberRequest>::try_from(packet.data) {
+                            Ok(msg) => msg,
+                            Err(_) => {
+                                // TODO: log
+                                continue;
+                            }
+                        };
+
                         let content = msg.content().unwrap();
                         let group_name = content.group_name();
                         let peer_id = content.peer_id();
@@ -243,7 +257,14 @@ impl Peer {
                         recv_sock.send(TransportPacket { socket_addr: packet.socket_addr, data: res_msg.into() }).unwrap();
                     },
                     MessageType::MemberRes => {
-                        let msg = Message::<MemberResponse>::try_from(packet.data).unwrap();
+                        let msg = match Message::<MemberResponse>::try_from(packet.data) {
+                            Ok(msg) => msg,
+                            Err(_) => {
+                                // TODO: log
+                                continue;
+                            },
+                        };
+
                         let content = msg.content().unwrap();
                         let peers = content.peers();
                         let group_name = content.group_name();
@@ -264,7 +285,13 @@ impl Peer {
                         }
                     },
                     MessageType::Chat => {
-                        let msg = Message::<Chat>::try_from(packet.data).unwrap();
+                        let msg = match Message::<Chat>::try_from(packet.data) {
+                            Ok(msg) => msg,
+                            Err(_) => {
+                                // TODO: log
+                                continue;
+                            },
+                        };
                         let content = msg.content().unwrap();
                         msg_sender.send((content.peer_id(), content.msg().to_string())).unwrap();
                     },
