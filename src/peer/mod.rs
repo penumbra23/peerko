@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, error::Error, sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, LockResult}, collections::HashMap, time::{SystemTime, Duration, Instant}, ops::Add};
+use std::{net::SocketAddr, error::Error, sync::{Arc, Mutex, LockResult}, collections::HashMap, time::{Duration, Instant}, ops::Add};
 
 use crossbeam_channel::{unbounded, Sender, Receiver};
 
@@ -9,7 +9,6 @@ use self::structures::{PeerId, NeighbourMap, NeighbourEntry};
 mod structures;
 
 static TTL_RENEWAL: Duration = std::time::Duration::from_secs(30);
-
 pub trait LockResultExt {
     type Guard;
 
@@ -33,7 +32,6 @@ pub struct Peer {
     port: u16,
     bootstrap: Option<SocketAddr>,
     transport: UdpTransport,
-    is_running: Arc<AtomicBool>,
     tx: Sender<String>,
     rx: Receiver<String>,
     peer_map: Arc<Mutex<HashMap::<String, NeighbourMap>>>,
@@ -53,18 +51,13 @@ impl Peer {
             port,
             bootstrap,
             transport: UdpTransport::new(SocketAddr::new("0.0.0.0".parse().unwrap(), port)).unwrap(),
-            is_running: Arc::new(AtomicBool::new(false)),
             rx, tx,
             peer_map,
             msg_tx, msg_rx,
         })
     }
 
-    pub fn is_running(&self) -> bool {
-        self.is_running.load(Ordering::Relaxed)
-    }
-
-    /// Returns a sender for sending commands to the peer.
+    /// Returns a sender for sending commands or messages to the peer.
     pub fn msg_sender(&self) -> Sender<String> {
         self.tx.clone()
     }
@@ -88,32 +81,95 @@ impl Peer {
     /// The peer listens for incoming messages or commands, sends requests to other peers
     /// and maintains the connection with neighbours.
     pub fn run(&mut self) -> ! {
-        let alive_peer_map_lock = self.peer_map.clone();
-        let handler_peer_map_lock = self.peer_map.clone();
-
-        let alive_sock = self.transport.try_clone().unwrap();
-        let recv_sock = self.transport.try_clone().unwrap();
         let cmd_sock = self.transport.try_clone().unwrap();
 
+        // Thread for sending the Alive message to all neighbours
+        self.run_keep_alive_thread();
+
+        // Handler thread for incoming packets
+        self.run_message_handler_thread();
+
+        if let Some(bootstrap) = self.bootstrap {
+            self.send_req(bootstrap);
+        }
+
+        let cmd_sender = self.msg_tx.clone();
+        
+        // The main thread catches the incoming commands from the msg_sender
+        loop {
+            match self.rx.recv() {
+                Ok(cmd_str) => {
+                    // Matching special commands:
+                    // peers - returns a list of all neighbours
+                    // req - send a MemberRequest to all peers to discover newly added ones
+                    match cmd_str.trim() {
+                        "peers" => {
+                            cmd_sender.send((self.name.clone(), format!("{:?}", self.peer_map.lock().ignore_poison()))).unwrap();
+                            continue;
+                        },
+                        "req" => {
+                            for (_group, peer_list) in self.peer_map.lock().ignore_poison().iter() {
+                                for peer in peer_list.iter() {
+                                    self.send_req(*peer.addr());
+                                }
+                            }
+                            // Send to bootstrap since he has a stable address
+                            // Although this fights the purpose of the bootstrap peer,
+                            // it's easier and faster to get a more stable connection
+                            // The proper way would be to introduce "stable peers"
+                            if let Some(bootstrap) = self.bootstrap {
+                                self.send_req(bootstrap);
+                            }
+                            continue;
+                        },
+                        _ => (),
+                    }
+
+                    let header = Header::new(1, message::format::MessageType::Chat, cmd_str.len().try_into().unwrap());
+                    for (_group, peer_list) in self.peer_map.lock().ignore_poison().iter() {
+                        for peer in peer_list.iter() {
+                            let chat = Chat::new(self.name.clone(), &cmd_str);
+                            let msg = Message::<Chat>::new(header, Some(chat));
+                            cmd_sock.send(TransportPacket {
+                                socket_addr: *peer.addr(),
+                                data: msg.into(),
+                            }).unwrap();
+                        }
+                    }
+                },
+                Err(err) => println!("Error on recv: {}", err),
+            }
+        }
+    }
+
+    fn run_keep_alive_thread(&self) -> std::thread::JoinHandle<()> {
+        let peer_map_lock = self.peer_map.clone();
+
+        let alive_sock = self.transport.try_clone().unwrap();
         let alive_packet = Alive::new(self.name.clone());
         // Thread for sending the Alive message to all neighbours
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(5));
-                let mut peer_map = alive_peer_map_lock.lock().ignore_poison();
+                let mut peer_map = peer_map_lock.lock().ignore_poison();
 
                 for (_, peer_list) in peer_map.iter_mut() {
                     peer_list.remove_expired();
                     for peer in peer_list.iter() {
                         let msg = Message::<Alive>::new(Header::new(1, MessageType::Alive, 0), Some(alive_packet.clone()));
                         // TODO: log error
-                        alive_sock.send(TransportPacket { socket_addr: peer.addr().clone(), data: msg.into() });
+                        alive_sock.send(TransportPacket { socket_addr: *peer.addr(), data: msg.into() });
                     }
                 }
             }
-        });
-    
+        })
+    }
+
+    fn run_message_handler_thread(&self) -> std::thread::JoinHandle<()> {
+        let peer_map_lock = self.peer_map.clone();
+        let recv_sock = self.transport.try_clone().unwrap();
         let msg_sender = self.msg_tx.clone();
+
         // Handler thread for incoming packets
         std::thread::spawn(move || {
             loop {
@@ -144,7 +200,7 @@ impl Peer {
                         let content = msg.content().unwrap();
                         let peer_id = content.peer_id();
 
-                        let mut group_map = handler_peer_map_lock.lock().ignore_poison();
+                        let mut group_map = peer_map_lock.lock().ignore_poison();
 
                         for (_, peer_list) in group_map.iter_mut() {
                             if peer_list.contains_peer(peer_id) {
@@ -158,7 +214,7 @@ impl Peer {
                         let group_name = content.group_name();
                         let peer_id = content.peer_id();
                         
-                        let mut group_map = handler_peer_map_lock.lock().ignore_poison();
+                        let mut group_map = peer_map_lock.lock().ignore_poison();
                         
                         if !group_map.contains_key(group_name) {
                             group_map.insert(group_name.to_string(), NeighbourMap::new());
@@ -174,15 +230,15 @@ impl Peer {
                         
                         let peer_id = content.peer_id();
                         let response_peers = peer_list
-                            .clone()
+                            //.clone()
                             .iter()
                             .filter(|s| *s.id() != peer_id.clone())
-                            .map(|e| (e.id().clone(), e.addr().clone()))
+                            .map(|e| (e.id().clone(), *e.addr()))
                             .collect();
                             
                         let res_msg = Message::<MemberResponse>::new(
                             Header::new(1, MessageType::MemberRes, 0),
-                            Some(MemberResponse::new(&group_name, response_peers).unwrap())
+                            Some(MemberResponse::new(group_name, response_peers).unwrap())
                         );
                         recv_sock.send(TransportPacket { socket_addr: packet.socket_addr, data: res_msg.into() }).unwrap();
                     },
@@ -192,7 +248,7 @@ impl Peer {
                         let peers = content.peers();
                         let group_name = content.group_name();
     
-                        let mut peer_map = handler_peer_map_lock.lock().ignore_poison();
+                        let mut peer_map = peer_map_lock.lock().ignore_poison();
                         
                         if !peer_map.contains_key(&group_name) {
                             peer_map.insert(group_name.clone(), NeighbourMap::new());
@@ -214,58 +270,6 @@ impl Peer {
                     },
                 }
             }
-        });
-
-        if let Some(bootstrap) = self.bootstrap {
-            self.send_req(bootstrap);
-        }
-
-        let cmd_sender = self.msg_tx.clone();
-        
-        // The main thread catches the incoming commands from the msg_sender
-        loop {
-            match self.rx.recv() {
-                Ok(cmd_str) => {
-                    // Matching special commands:
-                    // peers - returns a list of all neighbours
-                    // req - send a MemberRequest to all peers to discover newly added ones
-                    match cmd_str.trim() {
-                        "peers" => {
-                            cmd_sender.send((self.name.clone(), format!("{:?}", self.peer_map.lock().ignore_poison()))).unwrap();
-                            continue;
-                        },
-                        "req" => {
-                            for (_group, peer_list) in self.peer_map.lock().ignore_poison().iter() {
-                                for peer in peer_list.iter() {
-                                    self.send_req(peer.addr().clone());
-                                }
-                            }
-                            // Send to bootstrap since he has a stable address
-                            // Although this fights the purpose of the bootstrap peer,
-                            // it's easier and faster to get a more stable connection
-                            // The proper way would be to introduce "stable peers"
-                            if let Some(bootstrap) = self.bootstrap {
-                                self.send_req(bootstrap);
-                            }
-                            continue;
-                        },
-                        _ => (),
-                    }
-
-                    let header = Header::new(1, message::format::MessageType::Chat, cmd_str.len().try_into().unwrap());
-                    for (_group, peer_list) in self.peer_map.lock().ignore_poison().iter() {
-                        for peer in peer_list.iter() {
-                            let chat = Chat::new(self.name.clone(), &cmd_str);
-                            let msg = Message::<Chat>::new(header, Some(chat));
-                            cmd_sock.send(TransportPacket {
-                                socket_addr: peer.addr().clone(),
-                                data: msg.into(),
-                            }).unwrap();
-                        }
-                    }
-                },
-                Err(err) => println!("Error on recv: {}", err),
-            }
-        }
+        })
     }
 }

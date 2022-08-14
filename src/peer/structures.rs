@@ -54,15 +54,11 @@ impl NeighbourMap {
     }
 
     pub fn contains_peer(&self, peer_id: &str) -> bool {
-        self.peers.iter().find(|&peer| peer.id == peer_id).is_some()
+        self.peers.iter().any(|peer| peer.id == peer_id)
     }
 
     pub fn insert(&mut self, peer: NeighbourEntry) {
         self.peers.push(peer)
-    }
-
-    pub fn find_peer(&mut self, peer_id: &str) -> Option<&NeighbourEntry> {
-        self.peers.iter().find(|p| p.id == peer_id)
     }
 
     pub fn find_peer_mut(&mut self, peer_id: &str) -> Option<&mut NeighbourEntry> {
@@ -135,9 +131,6 @@ mod tests {
 
         assert_eq!(map.contains_peer("peer-a"), true);
         assert_eq!(map.contains_peer("peer-123"), false);
-        let peer = map.find_peer("peer-c").unwrap();
-
-        assert_eq!(peer.addr, "127.0.0.1:2002".parse().unwrap());
 
         let ids = vec!["peer-a", "peer-b", "peer-c"];
         let mut i = 0;

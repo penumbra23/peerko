@@ -24,6 +24,7 @@ mod transport;
 mod message;
 mod peer;
 
+/// The application that holds the current input and messages
 struct App {
     input: String,
     messages: Arc<Mutex<Vec<String>>>,
@@ -56,7 +57,9 @@ struct CliArgs {
     server_mode: Option<bool>,
 }
 
-fn setup_app() -> Result<(Terminal<CrosstermBackend<Stdout>>, App), Box<dyn Error>> {
+type AppTerminal = Terminal<CrosstermBackend<Stdout>>;
+
+fn setup_app() -> Result<(AppTerminal, App), Box<dyn Error>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -119,6 +122,7 @@ fn run_chat(peer_name: &str, msg_sender: Sender<String>, msg_receiver: Receiver<
     let (mut terminal, mut app) = setup_app()?;
 
     let thread_messages = app.messages.clone();
+    // Thread which receives the messages from the peer instance and prints them
     std::thread::spawn(move || {
         loop {
             if let Ok((id, msg)) = msg_receiver.recv() {
