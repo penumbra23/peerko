@@ -1,4 +1,4 @@
-use std::{fmt::Display, net::{SocketAddr, IpAddr}, io::{Cursor, Read}};
+use std::{fmt::Display, net::{SocketAddr, IpAddr}, io::{Cursor, Read}, error::Error};
 
 use byteorder::{WriteBytesExt, BigEndian, ReadBytesExt};
 
@@ -8,6 +8,8 @@ const MAGIC_HEADER: u8 = 0x9D;
 pub struct FormatError {
     pub error: String,
 }
+
+impl Error for FormatError {}
 
 impl Display for FormatError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -56,14 +58,17 @@ impl TryFrom<Vec<u8>> for Header {
 
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
         let mut reader = Cursor::new(value);
-        let magic_bytes = reader.read_u8().unwrap();
+        let magic_bytes = reader.read_u8()
+            .map_err(|err| FormatError{ error: err.to_string() })?;
 
         if magic_bytes != MAGIC_HEADER {
             return Err(FormatError { error: String::from("magic header mismatch") });
         }
 
-        let version_type = reader.read_u8().unwrap();
-        let size = reader.read_u16::<BigEndian>().unwrap();
+        let version_type = reader.read_u8()
+            .map_err(|err| FormatError{ error: err.to_string() })?;
+        let size = reader.read_u16::<BigEndian>()
+            .map_err(|err| FormatError{ error: err.to_string() })?;
         Ok(Header {
             magic_bytes,
             version: version_type & 0xF0,
@@ -126,9 +131,11 @@ impl TryFrom<Vec<u8>> for Alive {
         let mut reader = Cursor::new(&value);
 
         let mut peer_id_buf = vec![0; 32];
-        reader.read_exact(&mut peer_id_buf).unwrap();
+        reader.read_exact(&mut peer_id_buf)
+            .map_err(|err| FormatError{ error: err.to_string() })?;
 
-        let peer_id = String::from_utf8(peer_id_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
+        let peer_id = String::from_utf8(peer_id_buf.into_iter().filter(|s| *s != 0).collect())
+            .map_err(|err| FormatError{ error: err.to_string() })?;
 
         Ok(Alive {
             peer_id,
@@ -183,12 +190,16 @@ impl TryFrom<Vec<u8>> for MemberRequest {
 
         let mut grp_buf = vec![0; 32];
         let mut peer_id_buf = vec![0; 32];
-        reader.read_exact(&mut grp_buf).unwrap();
-        reader.read_exact(&mut peer_id_buf).unwrap();
+        reader.read_exact(&mut grp_buf)
+            .map_err(|err| FormatError{ error: err.to_string() })?;
+        reader.read_exact(&mut peer_id_buf)
+            .map_err(|err| FormatError{ error: err.to_string() })?;
 
-        // TODO: handle this
-        let group = String::from_utf8(grp_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
-        let peer_id = String::from_utf8(peer_id_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
+        let group = String::from_utf8(grp_buf.into_iter().filter(|s| *s != 0).collect())
+            .map_err(|err| FormatError{ error: err.to_string() })?;
+
+        let peer_id = String::from_utf8(peer_id_buf.into_iter().filter(|s| *s != 0).collect())
+            .map_err(|err| FormatError{ error: err.to_string() })?;
 
         Ok(MemberRequest {
             group,
@@ -267,23 +278,31 @@ impl TryFrom<Vec<u8>> for MemberResponse {
         let mut reader = Cursor::new(value);
         let mut grp_buf = vec![0; 32];
         
-        reader.read_exact(&mut grp_buf).unwrap();
+        reader.read_exact(&mut grp_buf)
+            .map_err(|err| FormatError{ error: err.to_string() })?;
 
-        let group = String::from_utf8(grp_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
+        let group = String::from_utf8(grp_buf.into_iter().filter(|s| *s != 0).collect())
+            .map_err(|err| FormatError{ error: err.to_string() })?;
 
-        let member_number = reader.read_u8().unwrap();
+        let member_number = reader.read_u8()
+            .map_err(|err| FormatError{ error: err.to_string() })?;
 
         let mut peers: Vec<(String, SocketAddr)> = Vec::new();
 
         for _ in 0..member_number {
             let mut peer_id_buf = vec![0; 32];
-            reader.read_exact(&mut peer_id_buf).unwrap();
-            let peer_id = String::from_utf8(peer_id_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
+            reader.read_exact(&mut peer_id_buf)
+                .map_err(|err| FormatError{ error: err.to_string() })?;
+
+            let peer_id = String::from_utf8(peer_id_buf.into_iter().filter(|s| *s != 0).collect())
+                .map_err(|err| FormatError{ error: err.to_string() })?;
 
             let mut ip_buf = [0; 4];
-            reader.read_exact(&mut ip_buf).unwrap();
+            reader.read_exact(&mut ip_buf)
+                .map_err(|err| FormatError{ error: err.to_string() })?;
 
-            let port = reader.read_u16::<BigEndian>().unwrap();
+            let port = reader.read_u16::<BigEndian>()
+                .map_err(|err| FormatError{ error: err.to_string() })?;
 
             peers.push((peer_id, SocketAddr::new(IpAddr::from(ip_buf), port)));
         }
@@ -322,15 +341,20 @@ impl TryFrom<Vec<u8>> for Chat {
         let mut reader = Cursor::new(value);
         let mut peer_id_buf = vec![0; 32];
         
-        reader.read_exact(&mut peer_id_buf).unwrap();
+        reader.read_exact(&mut peer_id_buf).map_err(|err| FormatError{ error: err.to_string() })?;
 
-        let peer_id = String::from_utf8(peer_id_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
+        let peer_id = String::from_utf8(peer_id_buf.into_iter().filter(|s| *s != 0).collect())
+            .map_err(|err| FormatError{ error: err.to_string() })?;
 
-        let msg_len = reader.read_u8().unwrap() as usize;
+        let msg_len = reader.read_u8()
+            .map_err(|err| FormatError{ error: err.to_string() })? as usize;
+
         let mut msg_buf = vec![0; msg_len];
 
-        reader.read_exact(&mut msg_buf).unwrap();
-        let msg = String::from_utf8(msg_buf.into_iter().filter(|s| *s != 0).collect()).unwrap();
+        reader.read_exact(&mut msg_buf).map_err(|err| FormatError{ error: err.to_string() })?;
+
+        let msg = String::from_utf8(msg_buf.into_iter().filter(|s| *s != 0).collect())
+            .map_err(|err| FormatError{ error: err.to_string() })?;
 
         Ok(Chat{
             peer_id,
@@ -395,15 +419,17 @@ impl<T> TryFrom<Vec<u8>> for Message<T> where T: MessageContent {
         let mut reader = Cursor::new(&value);
 
         let mut header_bytes: [u8; 4] = [0; 4];
-        reader.read_exact(&mut header_bytes).unwrap();
+        reader.read_exact(&mut header_bytes)
+            .map_err(|err| FormatError{ error: err.to_string() })?;
 
-        // TODO: handle error
-        let header = Header::try_from(header_bytes.to_vec()).unwrap();
+        let header = Header::try_from(header_bytes.to_vec())
+            .map_err(|err| FormatError{ error: err.to_string() })?;
 
         let content_size = value.len() - 4;
 
         let mut content_bytes: Vec<u8> = vec![0; content_size];
-        reader.read_exact(&mut content_bytes).unwrap();
+        reader.read_exact(&mut content_bytes)
+            .map_err(|err| FormatError{ error: err.to_string() })?;
 
         let content = T::try_from(content_bytes)
             .map_err(|_err| FormatError { error: "Error converting message content".to_string() })?;

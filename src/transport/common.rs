@@ -1,9 +1,11 @@
-use std::{net::SocketAddr, fmt::Display};
+use std::{net::SocketAddr, fmt::Display, error::Error};
 
 #[derive(Clone, Debug)]
 pub struct TransportError {
     pub error: String,
 }
+
+impl Error for TransportError {}
 
 impl Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

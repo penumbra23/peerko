@@ -67,14 +67,15 @@ impl Peer {
         self.msg_rx.clone()
     }
 
-    fn send_req(&self, peer_socket: SocketAddr) {
+    fn send_req(&self, peer_socket: SocketAddr) -> Result<(), Box<dyn Error>> {
         let header = Header::new(1, message::format::MessageType::MemberReq, 64);
-        let msg = Message::<MemberRequest>::new(header, Some(MemberRequest::new(&self.name.clone(), &self.group).unwrap()));
+        let msg = Message::<MemberRequest>::new(header, Some(MemberRequest::new(&self.name.clone(), &self.group)?));
         let buf: Vec<u8> = msg.into();
         self.transport.send(TransportPacket {
             socket_addr: peer_socket,
             data: buf,
-        }).unwrap();
+        })?;
+        Ok(())
     }
 
     /// After calling this method, the current thread blocks
