@@ -177,7 +177,7 @@ impl Peer {
                 // Receive the packet
                 let packet = match recv_sock.recv() {
                     Ok(p) => p,
-                    Err(err) => {
+                    Err(_err) => {
                         // TODO: log error
                         continue;
                     },

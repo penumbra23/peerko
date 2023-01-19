@@ -119,7 +119,7 @@ impl Alive {
 impl Into<Vec<u8>> for Alive {
     fn into(self) -> Vec<u8> {
         let mut buf = vec![0u8; 32];
-        buf[0..self.peer_id.len()].copy_from_slice(&self.peer_id.as_bytes());
+        buf[0..self.peer_id.len()].copy_from_slice(self.peer_id.as_bytes());
         buf
     }
 }
@@ -176,8 +176,8 @@ impl MemberRequest {
 impl Into<Vec<u8>> for MemberRequest {
     fn into(self) -> Vec<u8> {
         let mut buf = vec![0u8; 64];
-        buf[0..self.group.len()].copy_from_slice(&self.group.as_bytes());
-        buf[32..32+self.peer_id.len()].copy_from_slice(&self.peer_id.as_bytes());
+        buf[0..self.group.len()].copy_from_slice(self.group.as_bytes());
+        buf[32..32+self.peer_id.len()].copy_from_slice(self.peer_id.as_bytes());
         buf
     }
 }
@@ -399,13 +399,13 @@ impl<T> Message<T> where T: MessageContent {
     }
 }
 
-impl<T> Into<Vec<u8>> for Message<T> where T: MessageContent {
-    fn into(self) -> Vec<u8> {
+impl<T> From<Message<T>> for Vec<u8> where T: MessageContent {
+    fn from(val: Message<T>) -> Self {
         // let mut buf = [0; 576];
         // self.encode_as_be_bytes(&mut buf);
         // buf.to_vec()
-        let mut msg_bytes: Vec<u8> = self.header.into();
-        if let Some(content) = self.content {
+        let mut msg_bytes: Vec<u8> = val.header.into();
+        if let Some(content) = val.content {
             msg_bytes.extend(content.into());
         }
         msg_bytes
