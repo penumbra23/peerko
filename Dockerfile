@@ -9,4 +9,5 @@ COPY --from=builder \
     /home/rust/src/target/x86_64-unknown-linux-musl/release/peerko \
     /usr/local/bin/
     
+ENTRYPOINT ["/usr/local/bin/peerko"]
 CMD /usr/local/bin/peerko

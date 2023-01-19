@@ -20,6 +20,19 @@ Chat peers don't need to have a static IP address.
 
 ![](./assets/client-chat.gif)
 
+
+Running the server binary:
+
+`peerko --name my-server --group chatting --port 8000 -s true`
+
+Running the client binary:
+
+`peerko --name my-client-app --group chatting --port 8000 -b SERVER_IP:8000`
+
+Running in Docker:
+
+`docker run -it --rm -p 8000:8000 penumbra23/peerko:latest --name my-server --group chatting --port 8000 -s true `
+
 ### Commands
 
 When running the chat client, besides sending messages there are additional helper commands:
