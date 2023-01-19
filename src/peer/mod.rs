@@ -8,7 +8,9 @@ use self::structures::{PeerId, NeighbourMap, NeighbourEntry};
 
 mod structures;
 
+/// Period until to keep the peer inside the peer list until it sends a keep alive msg
 static TTL_RENEWAL: Duration = std::time::Duration::from_secs(30);
+
 pub trait LockResultExt {
     type Guard;
 
@@ -143,6 +145,7 @@ impl Peer {
         }
     }
 
+    /// Sends keep alive messages to peers from the internal list of neighbours
     fn run_keep_alive_thread(&self) -> std::thread::JoinHandle<()> {
         let peer_map_lock = self.peer_map.clone();
 
@@ -166,6 +169,7 @@ impl Peer {
         })
     }
 
+    /// Handles messages from other peers
     fn run_message_handler_thread(&self) -> std::thread::JoinHandle<()> {
         let peer_map_lock = self.peer_map.clone();
         let recv_sock = self.transport.try_clone().unwrap();

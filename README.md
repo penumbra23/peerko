@@ -16,10 +16,9 @@ To run the P2P chat, some conditions need to be fulfilled:
 - **ONE** server with a public IP address should be running in server mode (`-s true`); messages are not relayed through this server, it only acts as a rendezvous server to exchange public interfaces over peers
 - NAT types in front of the chat peers should be [endpoint independent](https://www.ietf.org/rfc/rfc5128.txt)
 
-Chat peers don't need to have a static IP address.
+Chat peers don't need to have a static, public IP address.
 
 ![](./assets/client-chat.gif)
-
 
 Running the server binary:
 
@@ -44,7 +43,8 @@ When running the chat client, besides sending messages there are additional help
 If you want to contribute to this project, there are some additional features to be made:
 
 - automatic peer discovery (periodically send `MemberRequest`)
-- encryption
+- message encryption
+- logging
 
 ## License
 MIT
