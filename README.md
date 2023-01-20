@@ -38,6 +38,8 @@ When running the chat client, besides sending messages there are additional help
 - `peers` - list connected peers
 - `req` - send a `MemberRequest` to connected peers to discover additional peers
 
+**NOTE**: if you don't see the neighbour peers, send a `req` command to get the list of peers from known peers
+
 ## Contribution
 
 If you want to contribute to this project, there are some additional features to be made:
